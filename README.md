@@ -1,7 +1,7 @@
 # LF Edge eKuiper - An edge lightweight IoT data analytics software
 
 [![GitHub Release](https://img.shields.io/github/release/lf-edge/ekuiper?color=brightgreen)](https://github.com/lf-edge/ekuiper/releases)
-[![Docker Pulls](https://img.shields.io/docker/pulls/emqx/kuiper)](https://hub.docker.com/r/lfedge/ekuiper)
+[![Docker Pulls](https://img.shields.io/docker/pulls/lfedge/ekuiper)](https://hub.docker.com/r/lfedge/ekuiper)
 [![codecov](https://codecov.io/gh/lf-edge/ekuiper/branch/master/graph/badge.svg?token=24E9Q3C0M0)](https://codecov.io/gh/lf-edge/ekuiper)
 [![Go Report Card](https://goreportcard.com/badge/github.com/lf-edge/ekuiper)](https://goreportcard.com/report/github.com/lf-edge/ekuiper)
 [![Slack](https://img.shields.io/badge/Slack-LF%20Edge-39AE85?logo=slack)](https://slack.lfedge.org/)
@@ -9,7 +9,7 @@
 [![Community](https://img.shields.io/badge/Community-Kuiper-yellow?logo=github)](https://github.com/lf-edge/ekuiper/discussions)
 [![YouTube](https://img.shields.io/badge/Subscribe-EMQ-FF0000?logo=youtube)](https://www.youtube.com/channel/UC5FjR77ErAxvZENEWzQaO5Q)
 
-[English](README.md) | [简体中文](README-CN.md)
+[English](README.md) | [简体中文](README-CN.md) | [日本語](README-JP.md)
 
 ## Overview
 
@@ -166,7 +166,7 @@ Check out the [latest document](https://ekuiper.org/docs/en/latest/) in official
 
 #### Preparation
 
-- Go version >= 1.18
+- Go version >= 1.23
 
 #### Compile
 

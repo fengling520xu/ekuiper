@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,12 +17,13 @@ package operator
 import (
 	"fmt"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/cast"
-	"github.com/lf-edge/ekuiper/pkg/message"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/message"
 )
 
 // Preprocessor only planned when
@@ -84,11 +85,11 @@ func (p *Preprocessor) Apply(ctx api.StreamContext, data interface{}, _ *xsql.Fu
 	}
 	if p.isEventTime {
 		if t, ok := tuple.Message[p.timestampField]; ok {
-			if ts, err := cast.InterfaceToUnixMilli(t, p.timestampFormat); err != nil {
+			if ts, err := cast.InterfaceToTime(t, p.timestampFormat); err != nil {
 				return fmt.Errorf("cannot convert timestamp field %s to timestamp with error %v", p.timestampField, err)
 			} else {
 				tuple.Timestamp = ts
-				log.Debugf("preprocessor calculate timestamp %d", tuple.Timestamp)
+				log.Debugf("preprocessor calculate timestamp %d", tuple.Timestamp.UnixMilli())
 			}
 		} else {
 			return fmt.Errorf("cannot find timestamp field %s in tuple %v", p.timestampField, tuple.Message)

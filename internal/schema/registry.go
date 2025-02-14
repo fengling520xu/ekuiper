@@ -1,4 +1,4 @@
-// Copyright 2022 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 package schema
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -22,12 +23,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/pkg/def"
-	"github.com/lf-edge/ekuiper/internal/pkg/httpx"
-	"github.com/lf-edge/ekuiper/internal/pkg/store"
-	"github.com/lf-edge/ekuiper/pkg/cast"
-	"github.com/lf-edge/ekuiper/pkg/kv"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/httpx"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/store"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/kv"
 )
 
 // Initialize in the server startup
@@ -287,26 +288,41 @@ func clearInstallFlag() {
 	_ = schemaDb.Delete(BOOT_INSTALL)
 }
 
-func ImportSchema(schema map[string]string) error {
+func ImportSchema(ctx context.Context, schema map[string]string) map[string]string {
 	if len(schema) == 0 {
 		return nil
 	}
+	errMap := map[string]string{}
 	for k, v := range schema {
+		select {
+		case <-ctx.Done():
+			return errMap
+		default:
+		}
 		err := schemaDb.Set(k, v)
 		if err != nil {
-			return err
+			errMap[k] = err.Error()
 		}
 	}
 	// set the flag to install the plugins when eKuiper reboot
-	return schemaDb.Set(BOOT_INSTALL, BOOT_INSTALL)
+	err := schemaDb.Set(BOOT_INSTALL, BOOT_INSTALL)
+	if err != nil {
+		errMap["flag"] = err.Error()
+	}
+	return errMap
 }
 
 // SchemaPartialImport compare the schema to be installed and the one in database
 // if not exist in database, install;
-// if exist, ignore
-func SchemaPartialImport(schemas map[string]string) map[string]string {
+// if existed, ignore
+func SchemaPartialImport(ctx context.Context, schemas map[string]string) map[string]string {
 	errMap := map[string]string{}
 	for k, v := range schemas {
+		select {
+		case <-ctx.Done():
+			return errMap
+		default:
+		}
 		schemaScript := ""
 		found, _ := schemaDb.Get(k, &schemaScript)
 		if !found {

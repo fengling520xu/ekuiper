@@ -143,6 +143,9 @@ Response Sample:
 
 ```shell
 {
+    "lastStartTimestamp": 0,
+    "lastStopTimestamp":0,
+    "nextStartTimestamp":0,
     "source_demo_0_records_in_total":5,
     "source_demo_0_records_out_total":5,
     "source_demo_0_exceptions_total":0,
@@ -158,6 +161,25 @@ Response Sample:
     "op_filter_0_last_invocation":"2020-01-02T11:28:33.054821",
     ...
 }
+```
+
+Among them, the following states respectively represent the unix timestamp of the last start and stop of the rule. When the rule is a periodic rule, you can use `nextStartTimestamp` to view the unix timestamp of the next start of the rule.
+
+```shell
+{
+    "lastStartTimestamp": 0,
+    "lastStopTimestamp":0,
+    "nextStartTimestamp":0,
+    ...
+}
+```
+
+## get the status of all rules
+
+The command is used to get the status of all rules. If the rule is running, the metrics will be retrieved realtime.
+
+```shell
+GET http://localhost:9081/rules/status/all
 ```
 
 ## get the topology structure of a rule
@@ -213,3 +235,24 @@ For the API, here is the explanation of the status codes:
 - If the request body is incorrect, a status code of 400 will be returned, indicating an invalid request.
 - If the rule validation fails, a status code of 422 will be returned, indicating an invalid rule.
 - If the rule validation passes, a status code of 200 will be returned, indicating a valid and successfully validated rule.
+
+## Query Rule Plan
+
+The API is used to get the plan of the SQL.
+
+```shell
+GET  http://localhost:9081/rules/{id}/explain
+```
+
+## Get rule CPU information
+
+```shell
+GET http://localhost:9081/rules/usage/cpu
+
+{
+    "rule1": 220,
+    "rule2": 270
+}
+```
+
+Get the CPU time used by all rules in the past 30 seconds, in milliseconds.

@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,11 +17,12 @@ package operator
 import (
 	"fmt"
 
-	"github.com/lf-edge/ekuiper/internal/binder/function"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/message"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/binder/function"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/message"
 )
 
 type ProjectOp struct {
@@ -29,16 +30,16 @@ type ProjectOp struct {
 	AliasNames       []string   // list of alias name
 	ExprNames        []string   // list of expr name
 	ExceptNames      []string   // list of except name
-	WindowFuncNames  map[string]struct{}
 	AllWildcard      bool
 	WildcardEmitters map[string]bool
 	AliasFields      ast.Fields
 	ExprFields       ast.Fields
-	IsAggregate      bool
+	IsAggregate      bool // Whether the project is used in an aggregate context. This is set by planner by analyzing the SQL query
 	EnableLimit      bool
 	LimitCount       int
 
 	SendMeta bool
+	SendNil  bool
 
 	kvs   []interface{}
 	alias []interface{}
@@ -53,49 +54,44 @@ func (pp *ProjectOp) Apply(ctx api.StreamContext, data interface{}, fv *xsql.Fun
 	log := ctx.GetLogger()
 	log.Debugf("project plan receive %v", data)
 	if pp.LimitCount == 0 && pp.EnableLimit {
-		return []xsql.TupleRow{}
+		return []xsql.Row{}
 	}
 	switch input := data.(type) {
 	case error:
 		return input
-	case *xsql.Tuple:
-		ve := pp.getVE(input, input, nil, fv, afv)
+	case xsql.Row:
+		ve := pp.getRowVE(input, nil, fv, afv)
 		if err := pp.project(input, ve); err != nil {
 			return fmt.Errorf("run Select error: %s", err)
 		} else {
-			if pp.SendMeta && input.Metadata != nil {
-				input.Set(message.MetaKey, input.Metadata)
+			if pp.SendMeta {
+				if md, ok := input.(xsql.MetaData); ok {
+					metadata := md.MetaData()
+					if metadata != nil {
+						input.Set(message.MetaKey, md.MetaData())
+					}
+				}
 			}
 		}
-	case xsql.SingleCollection:
+	case xsql.Collection:
 		var err error
 		if pp.IsAggregate {
 			input.SetIsAgg(true)
-			err = input.GroupRange(func(_ int, aggRow xsql.CollectionRow) (bool, error) {
+			err = input.GroupRange(func(i int, aggRow xsql.CollectionRow) (bool, error) {
+				if pp.EnableLimit && pp.LimitCount > 0 && i >= pp.LimitCount {
+					return false, nil
+				}
 				ve := pp.getVE(aggRow, aggRow, input.GetWindowRange(), fv, afv)
 				if err := pp.project(aggRow, ve); err != nil {
 					return false, fmt.Errorf("run Select error: %s", err)
 				}
 				return true, nil
 			})
-			if pp.EnableLimit && pp.LimitCount > 0 && input.Len() > pp.LimitCount {
-				var sel []int
-				sel = make([]int, pp.LimitCount, pp.LimitCount)
-				for i := 0; i < pp.LimitCount; i++ {
-					sel[i] = i
-				}
-				input = input.Filter(sel).(xsql.SingleCollection)
-			}
 		} else {
-			if pp.EnableLimit && pp.LimitCount > 0 && input.Len() > pp.LimitCount {
-				var sel []int
-				sel = make([]int, pp.LimitCount, pp.LimitCount)
-				for i := 0; i < pp.LimitCount; i++ {
-					sel[i] = i
+			err = input.RangeSet(func(i int, row xsql.Row) (bool, error) {
+				if pp.EnableLimit && pp.LimitCount > 0 && i >= pp.LimitCount {
+					return false, nil
 				}
-				input = input.Filter(sel).(xsql.SingleCollection)
-			}
-			err = input.RangeSet(func(_ int, row xsql.Row) (bool, error) {
 				aggData, ok := input.(xsql.AggregateData)
 				if !ok {
 					return false, fmt.Errorf("unexpected type, cannot find aggregate data")
@@ -110,32 +106,13 @@ func (pp *ProjectOp) Apply(ctx api.StreamContext, data interface{}, fv *xsql.Fun
 		if err != nil {
 			return err
 		}
-	case xsql.GroupedCollection: // The order is important, because single collection usually is also a groupedCollection
-		if pp.EnableLimit && pp.LimitCount > 0 && input.Len() > pp.LimitCount {
-			var sel []int
-			sel = make([]int, pp.LimitCount, pp.LimitCount)
-			for i := 0; i < pp.LimitCount; i++ {
-				sel[i] = i
-			}
-			input = input.Filter(sel).(xsql.GroupedCollection)
-		}
-		err := input.GroupRange(func(_ int, aggRow xsql.CollectionRow) (bool, error) {
-			ve := pp.getVE(aggRow, aggRow, input.GetWindowRange(), fv, afv)
-			if err := pp.project(aggRow, ve); err != nil {
-				return false, fmt.Errorf("run Select error: %s", err)
-			}
-			return true, nil
-		})
-		if err != nil {
-			return err
-		}
 	default:
 		return fmt.Errorf("run Select error: invalid input %[1]T(%[1]v)", input)
 	}
 	return data
 }
 
-func (pp *ProjectOp) getVE(tuple xsql.Row, agg xsql.AggregateData, wr *xsql.WindowRange, fv *xsql.FunctionValuer, afv *xsql.AggregateFunctionValuer) *xsql.ValuerEval {
+func (pp *ProjectOp) getVE(tuple xsql.RawRow, agg xsql.AggregateData, wr *xsql.WindowRange, fv *xsql.FunctionValuer, afv *xsql.AggregateFunctionValuer) *xsql.ValuerEval {
 	afv.SetData(agg)
 	if pp.IsAggregate {
 		return &xsql.ValuerEval{Valuer: xsql.MultiAggregateValuer(agg, fv, tuple, fv, afv, &xsql.WildcardValuer{Data: tuple})}
@@ -147,17 +124,20 @@ func (pp *ProjectOp) getVE(tuple xsql.Row, agg xsql.AggregateData, wr *xsql.Wind
 	}
 }
 
-func (pp *ProjectOp) project(row xsql.Row, ve *xsql.ValuerEval) error {
+func (pp *ProjectOp) getRowVE(tuple xsql.Row, wr *xsql.WindowRange, fv *xsql.FunctionValuer, afv *xsql.AggregateFunctionValuer) *xsql.ValuerEval {
+	if ag, ok := tuple.(xsql.AggregateData); ok {
+		return pp.getVE(tuple, ag, wr, fv, afv)
+	} else {
+		return pp.getVE(tuple, nil, wr, fv, afv)
+	}
+}
+
+func (pp *ProjectOp) project(row xsql.RawRow, ve *xsql.ValuerEval) error {
 	// Calculate all fields then pick the needed ones
 	// To make sure all calculations are run with the same context (e.g. alias values)
 	// Do not set value during calculations
 
 	for _, f := range pp.ExprFields {
-		if _, ok := pp.WindowFuncNames[f.Name]; ok {
-			vi, _ := row.Value(f.Name, "")
-			pp.kvs = append(pp.kvs, f.Name, vi)
-			continue
-		}
 		vi := ve.Eval(f.Expr)
 		if e, ok := vi.(error); ok {
 			return fmt.Errorf("expr: %s meet error, err:%v", f.Expr.String(), e)
@@ -174,11 +154,6 @@ func (pp *ProjectOp) project(row xsql.Row, ve *xsql.ValuerEval) error {
 		}
 	}
 	for _, f := range pp.AliasFields {
-		if _, ok := pp.WindowFuncNames[f.AName]; ok {
-			vi, _ := row.Value(f.AName, "")
-			pp.kvs = append(pp.kvs, f.AName, vi)
-			continue
-		}
 		vi := ve.Eval(f.Expr)
 		if e, ok := vi.(error); ok {
 			if ref, ok := f.Expr.(*ast.FieldRef); ok {
@@ -187,11 +162,11 @@ func (pp *ProjectOp) project(row xsql.Row, ve *xsql.ValuerEval) error {
 			}
 			return fmt.Errorf("alias: %v expr: %v meet error, err:%v", f.AName, f.Expr.String(), e)
 		}
-		if vi != nil {
+		if vi != nil || pp.SendNil {
 			pp.alias = append(pp.alias, f.AName, vi)
 		}
 	}
-	row.Pick(pp.AllWildcard, pp.ColNames, pp.WildcardEmitters, pp.ExceptNames)
+	row.Pick(pp.AllWildcard, pp.ColNames, pp.WildcardEmitters, pp.ExceptNames, pp.SendNil)
 	for i := 0; i < len(pp.kvs); i += 2 {
 		row.Set(pp.kvs[i].(string), pp.kvs[i+1])
 	}

@@ -15,18 +15,21 @@
 package context
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"path"
 	"reflect"
+	"runtime/pprof"
 	"testing"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/pkg/store"
-	"github.com/lf-edge/ekuiper/internal/topo/state"
-	"github.com/lf-edge/ekuiper/internal/topo/transform"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/store"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/state"
 )
 
 func TestState(t *testing.T) {
@@ -50,7 +53,7 @@ func TestState(t *testing.T) {
 		}
 	)
 	// initialization
-	cStore, err := state.CreateStore(ruleId, api.AtLeastOnce)
+	cStore, err := state.CreateStore(ruleId, def.AtLeastOnce)
 	if err != nil {
 		t.Errorf("Get store for rule %s error: %s", ruleId, err)
 		return
@@ -230,33 +233,10 @@ func TestParseTemplate(t *testing.T) {
 	}
 }
 
-func TestTransition(t *testing.T) {
-	var mockFunc transform.TransFunc = func(d interface{}) ([]byte, bool, error) {
-		return []byte(fmt.Sprintf("%v", d)), true, nil
-	}
-	tests := []struct {
-		data interface{}
-		r    []byte
-	}{
-		{
-			data: "hello",
-			r:    []byte(`hello`),
-		}, {
-			data: "world",
-			r:    []byte(`world`),
-		}, {
-			data: map[string]interface{}{"a": "hello"},
-			r:    []byte(`map[a:hello]`),
-		},
-	}
-
-	fmt.Printf("The test bucket size is %d.\n\n", len(tests))
-	ctx := Background().WithMeta("testTransRule", "op1", &state.MemoryStore{}).(*DefaultContext)
-	nc := WithValue(ctx, TransKey, mockFunc)
-	for i, tt := range tests {
-		r, _, _ := nc.TransformOutput(tt.data)
-		if !reflect.DeepEqual(tt.r, r) {
-			t.Errorf("%d\n\nstmt mismatch:\n\nexp=%#v\n\ngot=%#v\n\n", i, string(tt.r), string(r))
-		}
-	}
+func TestRuleBackground(t *testing.T) {
+	conf.InitConf()
+	conf.Config.Basic.EnableResourceProfiling = true
+	c := RuleBackground("test")
+	ctx := pprof.WithLabels(context.Background(), pprof.Labels("rule", "test"))
+	assert.Equal(t, c.ctx, ctx)
 }

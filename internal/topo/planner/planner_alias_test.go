@@ -22,10 +22,10 @@ import (
 
 	"github.com/gdexlab/go-render/render"
 
-	"github.com/lf-edge/ekuiper/internal/pkg/store"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/store"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
 )
 
 func TestPlannerAlias(t *testing.T) {
@@ -244,15 +244,16 @@ func TestPlannerAlias(t *testing.T) {
 			t.Errorf("%d. %q: error compile sql: %s\n", i, tt.sql, err)
 			continue
 		}
-		p, _ := createLogicalPlan(stmt, &api.RuleOption{
-			IsEventTime:        false,
-			LateTol:            0,
-			Concurrency:        0,
-			BufferLength:       0,
-			SendMetaToSink:     false,
-			Qos:                0,
-			CheckpointInterval: 0,
-			SendError:          true,
+		p, _ := createLogicalPlan(stmt, &def.RuleOption{
+			IsEventTime:          false,
+			LateTol:              0,
+			Concurrency:          0,
+			BufferLength:         0,
+			SendMetaToSink:       false,
+			Qos:                  0,
+			CheckpointInterval:   0,
+			SendError:            true,
+			PlanOptimizeStrategy: &def.PlanOptimizeStrategy{},
 		}, kv)
 		if !reflect.DeepEqual(tt.p, p) {
 			t.Errorf("%d. %q\n\nstmt mismatch:\n\nexp=%#v\n\ngot=%#v\n\n", i, tt.sql, render.AsCode(tt.p), render.AsCode(p))

@@ -1,4 +1,4 @@
-// Copyright 2021-2022 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,14 +24,15 @@ import (
 
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/plugin/portable"
-	"github.com/lf-edge/ekuiper/internal/plugin/portable/runtime"
-	"github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/internal/topo/state"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin/portable"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin/portable/runtime"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/state"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
 // Only support to test a single plugin Testing process.
@@ -43,10 +44,10 @@ import (
 // EDIT HERE: Define the plugins that you want to test.
 var testingPlugin = &portable.PluginInfo{
 	PluginMeta: runtime.PluginMeta{
-		Name:       "mirror",
+		Name:       "pysam",
 		Version:    "v1",
-		Language:   "go",
-		Executable: "mirror.py",
+		Language:   "python",
+		Executable: "pysam.py",
 	},
 	Sources:   []string{"pyjson"},
 	Sinks:     []string{"print"},
@@ -69,7 +70,6 @@ var mockFuncData = [][]interface{}{
 }
 
 var (
-	ins     *runtime.PluginIns
 	m       *portable.Manager
 	ctx     api.StreamContext
 	cancels sync.Map
@@ -100,6 +100,10 @@ func startPluginIns(info *portable.PluginInfo) (*runtime.PluginIns, error) {
 		return nil, fmt.Errorf("can't create new control channel: %s", err.Error())
 	}
 	conf.Log.Println("waiting handshake")
+	if conf.Config == nil {
+		conf.Config = &conf.KuiperConf{}
+	}
+	conf.Config.Portable.InitTimeout = cast.DurationConf(5 * time.Minute)
 	err = ctrlChan.Handshake()
 	if err != nil {
 		return nil, fmt.Errorf("plugin %s control handshake error: %v", info.Name, err)
@@ -132,50 +136,55 @@ func startSymbolHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	switch ctrl.PluginType {
 	case runtime.TYPE_SOURCE:
-		source, err := m.Source(ctrl.SymbolName)
+		ss, err := m.Source(ctrl.SymbolName)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("running source %s %v", ctrl.SymbolName, err), http.StatusBadRequest)
 			return
 		}
+		source := ss.(*runtime.PortableSource)
 		newctx, cancel := ctx.WithCancel()
 		if _, ok := cancels.LoadOrStore(ctrl.PluginType+ctrl.SymbolName, cancel); ok {
 			http.Error(w, fmt.Sprintf("source symbol %s already exists", ctrl.SymbolName), http.StatusBadRequest)
 			return
 		}
-		consumer := make(chan api.SourceTuple)
-		errCh := make(chan error)
 		go func() {
-			defer func() {
-				source.Close(newctx)
-				cancels.Delete(ctrl.PluginType + ctrl.SymbolName)
-			}()
-			for {
-				select {
-				case tuple := <-consumer:
-					fmt.Println(tuple)
-				case err := <-errCh:
-					conf.Log.Error(err)
-					return
-				case <-newctx.Done():
-					return
-				}
-			}
+			<-newctx.Done()
+			source.Close(newctx)
+			cancels.Delete(ctrl.PluginType + ctrl.SymbolName)
 		}()
-		source.Configure("", ctrl.Config)
-		go source.Open(newctx, consumer, errCh)
+		err = source.Provision(newctx, ctrl.Config)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		err = source.Connect(newctx, nil)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		go source.Subscribe(newctx, func(_ api.StreamContext, data any, _ map[string]any, _ time.Time) {
+			fmt.Printf("%v\n", data)
+		}, func(ctx api.StreamContext, err error) {
+			fmt.Println(err.Error())
+		})
 	case runtime.TYPE_SINK:
-		sink, err := m.Sink(ctrl.SymbolName)
+		ss, err := m.Sink(ctrl.SymbolName)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("running sink %s %v", ctrl.SymbolName, err), http.StatusBadRequest)
 			return
 		}
+		sink := ss.(*runtime.PortableSink)
 		newctx, cancel := ctx.WithCancel()
 		if _, ok := cancels.LoadOrStore(ctrl.PluginType+ctrl.SymbolName, cancel); ok {
 			http.Error(w, fmt.Sprintf("source symbol %s already exists", ctrl.SymbolName), http.StatusBadRequest)
 			return
 		}
-		sink.Configure(ctrl.Config)
-		err = sink.Open(newctx)
+		err = sink.Provision(newctx, ctrl.Config)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("open sink %s %v", ctrl.SymbolName, err), http.StatusBadRequest)
+			return
+		}
+		err = sink.Connect(newctx, nil)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("open sink %s %v", ctrl.SymbolName, err), http.StatusBadRequest)
 			return
@@ -187,14 +196,19 @@ func startSymbolHandler(w http.ResponseWriter, r *http.Request) {
 			}()
 			for {
 				for _, m := range mockSinkData {
-					err = sink.Collect(newctx, m)
+					jsonStr, err := json.Marshal(m)
+					if err != nil {
+						fmt.Printf("cannot collect data: %v\n", err)
+						continue
+					}
+					err = sink.Collect(newctx, &xsql.RawTuple{Rawdata: jsonStr})
 					if err != nil {
 						fmt.Printf("cannot collect data: %v\n", err)
 						continue
 					}
 					select {
-					case <-ctx.Done():
-						ctx.GetLogger().Info("stop sink")
+					case <-newctx.Done():
+						fmt.Println("stop sink")
 						return
 					default:
 					}
@@ -220,15 +234,15 @@ func startSymbolHandler(w http.ResponseWriter, r *http.Request) {
 			}()
 			for {
 				for _, m := range mockFuncData {
-					r, ok := f.Exec(m, fc)
+					r, ok := f.Exec(fc, m)
 					if !ok {
 						fmt.Print("cannot exec func\n")
 						continue
 					}
 					fmt.Println(r)
 					select {
-					case <-ctx.Done():
-						ctx.GetLogger().Info("stop sink")
+					case <-newctx.Done():
+						fmt.Println("stop func")
 						return
 					default:
 					}

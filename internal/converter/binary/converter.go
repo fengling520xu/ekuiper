@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,10 @@ package binary
 import (
 	"fmt"
 
-	"github.com/lf-edge/ekuiper/pkg/message"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/message"
 )
 
 type Converter struct{}
@@ -28,11 +31,20 @@ func GetConverter() (message.Converter, error) {
 	return converter, nil
 }
 
-func (c *Converter) Encode(d interface{}) ([]byte, error) {
-	return nil, fmt.Errorf("not supported")
+func (c *Converter) Encode(ctx api.StreamContext, d any) (b []byte, err error) {
+	switch dt := d.(type) {
+	case map[string]any:
+		bb, ok := dt[message.DefaultField]
+		if ok {
+			return cast.ToByteA(bb, cast.CONVERT_SAMEKIND)
+		} else {
+			return nil, fmt.Errorf("field %s not exist", message.DefaultField)
+		}
+	}
+	return nil, fmt.Errorf("unsupported type %v, must be a map", d)
 }
 
-func (c *Converter) Decode(b []byte) (interface{}, error) {
+func (c *Converter) Decode(ctx api.StreamContext, b []byte) (m any, err error) {
 	result := make(map[string]interface{})
 	result[message.DefaultField] = b
 	return result, nil

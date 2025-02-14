@@ -1,4 +1,4 @@
-// Copyright 2021 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,13 +15,15 @@
 package state
 
 import (
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
 )
 
 const CheckpointListKey = "checkpoints"
 
-func CreateStore(ruleId string, qos api.Qos) (api.Store, error) {
-	if qos >= api.AtLeastOnce {
+func CreateStore(ruleId string, qos def.Qos) (api.Store, error) {
+	if qos >= def.AtLeastOnce {
 		return getKVStore(ruleId)
 	} else {
 		return newMemoryStore(), nil

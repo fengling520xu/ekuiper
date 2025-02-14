@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,9 +21,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/timex"
 )
 
 func TestComparison(t *testing.T) {
@@ -57,7 +57,7 @@ func TestComparison(t *testing.T) {
 			},
 			r: []interface{}{
 				errors.New("invalid operation string(32) > int64(72)"), errors.New("invalid operation string(32) <= int64(32)"), false,
-				false, true, false, true, errors.New("between operator cannot compare string(32) and int(30)"), errors.New("between operator cannot compare string(32) and int(2)"),
+				false, true, false, true, errors.New("between operator cannot compare string(32) and int64(30)"), errors.New("between operator cannot compare string(32) and int64(2)"),
 			},
 		}, { // 3
 			m: map[string]interface{}{
@@ -120,7 +120,7 @@ func TestComparison(t *testing.T) {
 			},
 			r: []interface{}{
 				errors.New("invalid operation string(2020-02-26T02:37:21.822Z) > int64(72)"), errors.New("invalid operation string(2020-02-26T02:37:21.822Z) <= int64(32)"), false,
-				errors.New("invalid operation string(2020-02-26T02:37:21.822Z) >= time.Time(2018-11-02 09:54:48.442 +0000 UTC)"), errors.New("invalid operation string(2020-02-26T02:37:21.822Z) < time.Time(2018-11-02 09:54:48.442 +0000 UTC)"), errors.New("invalid operation string(2020-02-26T02:37:21.822Z) = time.Time(2018-11-02 09:54:48.442 +0000 UTC)"), errors.New("invalid operation string(2020-02-26T02:37:21.822Z) != time.Time(2018-11-02 09:54:48.442 +0000 UTC)"), errors.New("between operator cannot compare string(2020-02-26T02:37:21.822Z) and int(30)"), errors.New("between operator cannot compare string(2020-02-26T02:37:21.822Z) and int(2)"),
+				errors.New("invalid operation string(2020-02-26T02:37:21.822Z) >= time.Time(2018-11-02 09:54:48.442 +0000 UTC)"), errors.New("invalid operation string(2020-02-26T02:37:21.822Z) < time.Time(2018-11-02 09:54:48.442 +0000 UTC)"), errors.New("invalid operation string(2020-02-26T02:37:21.822Z) = time.Time(2018-11-02 09:54:48.442 +0000 UTC)"), errors.New("invalid operation string(2020-02-26T02:37:21.822Z) != time.Time(2018-11-02 09:54:48.442 +0000 UTC)"), errors.New("between operator cannot compare string(2020-02-26T02:37:21.822Z) and int64(30)"), errors.New("between operator cannot compare string(2020-02-26T02:37:21.822Z) and int64(2)"),
 			},
 		}, { // 10
 			m: map[string]interface{}{
@@ -128,7 +128,7 @@ func TestComparison(t *testing.T) {
 			},
 			r: []interface{}{
 				false, false, false,
-				true, false, true, false, false, true,
+				false, false, false, false, false, false,
 			},
 		}, { // 11
 			m: map[string]interface{}{
@@ -137,7 +137,7 @@ func TestComparison(t *testing.T) {
 			},
 			r: []interface{}{
 				false, true, errors.New("invalid operation int64(12) = string(string literal)"),
-				false, false, false, true, false, true,
+				false, false, false, false, false, false,
 			},
 		}, { // 12
 			m: map[string]interface{}{
@@ -170,7 +170,7 @@ func TestComparison(t *testing.T) {
 	fmt.Printf("The test bucket size is %d.\n\n", len(data)*len(sqls))
 	for i, tt := range data {
 		for j, c := range conditions {
-			tuple := &Tuple{Emitter: "src", Message: tt.m, Timestamp: conf.GetNowInMilli(), Metadata: nil}
+			tuple := &Tuple{Emitter: "src", Message: tt.m, Timestamp: timex.GetNow(), Metadata: nil}
 			ve := &ValuerEval{Valuer: MultiValuer(tuple)}
 			result := ve.Eval(c)
 			if !reflect.DeepEqual(tt.r[j], result) {
@@ -191,7 +191,7 @@ func TestCalculation(t *testing.T) {
 				"b": float64(72),
 			},
 			r: []interface{}{
-				float64(104), float64(96), float64(0.4444444444444444), float64(32),
+				float64(104), float64(96), 0.4444444444444444, float64(32),
 			},
 		}, {
 			m: map[string]interface{}{
@@ -257,7 +257,7 @@ func TestCalculation(t *testing.T) {
 	fmt.Printf("The test bucket size is %d.\n\n", len(data)*len(sqls))
 	for i, tt := range data {
 		for j, c := range projects {
-			tuple := &Tuple{Emitter: "src", Message: tt.m, Timestamp: conf.GetNowInMilli(), Metadata: nil}
+			tuple := &Tuple{Emitter: "src", Message: tt.m, Timestamp: timex.GetNow(), Metadata: nil}
 			ve := &ValuerEval{Valuer: MultiValuer(tuple)}
 			result := ve.Eval(c)
 			if !reflect.DeepEqual(tt.r[j], result) {
@@ -278,7 +278,7 @@ func TestCase(t *testing.T) {
 				"b": float64(72),
 			},
 			r: []interface{}{
-				1, 0, 0, 1,
+				int64(1), int64(0), int64(0), int64(1),
 			},
 		}, {
 			m: map[string]interface{}{
@@ -286,7 +286,7 @@ func TestCase(t *testing.T) {
 				"b": int64(72),
 			},
 			r: []interface{}{
-				1, 0, 0, 1,
+				int64(1), int64(0), int64(0), int64(1),
 			},
 		}, {
 			m: map[string]interface{}{
@@ -303,20 +303,20 @@ func TestCase(t *testing.T) {
 				"b": int64(55),
 			},
 			r: []interface{}{
-				0, nil, 0, 1,
+				int64(0), nil, int64(0), int64(1),
 			},
 		}, {
 			m: map[string]interface{}{
 				"a": int64(55),
 				"b": float64(0),
 			},
-			r: []interface{}{0, nil, 0, 1},
+			r: []interface{}{int64(0), nil, int64(0), int64(1)},
 		}, {
 			m: map[string]interface{}{
 				"c": "nothing",
 			},
 			r: []interface{}{
-				0, nil, -1, nil,
+				int64(0), nil, int64(-1), nil,
 			},
 		}, {
 			m: map[string]interface{}{
@@ -324,7 +324,7 @@ func TestCase(t *testing.T) {
 				"c": "nothing",
 			},
 			r: []interface{}{
-				0, nil, -1, nil,
+				int64(0), nil, int64(-1), nil,
 			},
 		},
 	}
@@ -342,7 +342,7 @@ func TestCase(t *testing.T) {
 	fmt.Printf("The test bucket size is %d.\n\n", len(data)*len(sqls))
 	for i, tt := range data {
 		for j, c := range projects {
-			tuple := &Tuple{Emitter: "src", Message: tt.m, Timestamp: conf.GetNowInMilli(), Metadata: nil}
+			tuple := &Tuple{Emitter: "src", Message: tt.m, Timestamp: timex.GetNow(), Metadata: nil}
 			ve := &ValuerEval{Valuer: MultiValuer(tuple)}
 			result := ve.Eval(c)
 			if !reflect.DeepEqual(tt.r[j], result) {
@@ -385,7 +385,7 @@ func TestArray(t *testing.T) {
 	fmt.Printf("The test bucket size is %d.\n\n", len(data)*len(sqls))
 	for i, tt := range data {
 		for j, c := range projects {
-			tuple := &Tuple{Emitter: "src", Message: tt.m, Timestamp: conf.GetNowInMilli(), Metadata: nil}
+			tuple := &Tuple{Emitter: "src", Message: tt.m, Timestamp: timex.GetNow(), Metadata: nil}
 			ve := &ValuerEval{Valuer: MultiValuer(tuple)}
 			result := ve.Eval(c)
 			if !reflect.DeepEqual(tt.r[j], result) {
@@ -454,7 +454,7 @@ func TestLike(t *testing.T) {
 	fmt.Printf("The test bucket size is %d.\n\n", len(data)*len(sqls))
 	for i, tt := range data {
 		for j, c := range projects {
-			tuple := &Tuple{Emitter: "src", Message: tt.m, Timestamp: conf.GetNowInMilli(), Metadata: nil}
+			tuple := &Tuple{Emitter: "src", Message: tt.m, Timestamp: timex.GetNow(), Metadata: nil}
 			ve := &ValuerEval{Valuer: MultiValuer(tuple)}
 			result := ve.Eval(c)
 			if !reflect.DeepEqual(tt.r[j], result) {

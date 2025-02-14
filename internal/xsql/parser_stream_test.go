@@ -20,8 +20,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lf-edge/ekuiper/internal/testx"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/internal/testx"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
 )
 
 func TestParser_ParseCreateStream(t *testing.T) {
@@ -30,6 +30,25 @@ func TestParser_ParseCreateStream(t *testing.T) {
 		stmt *ast.StreamStmt
 		err  string
 	}{
+		{
+			s: `CREATE STREAM demo(list ARRAY(ARRAY(BIGINT))) WITH (DATASOURCE="users", FORMAT="JSON")`,
+			stmt: &ast.StreamStmt{
+				Name: ast.StreamName("demo"),
+				StreamFields: []ast.StreamField{
+					{
+						Name: "list",
+						FieldType: &ast.ArrayType{
+							Type:      ast.ARRAY,
+							FieldType: &ast.ArrayType{Type: ast.BIGINT},
+						},
+					},
+				},
+				Options: &ast.Options{
+					DATASOURCE: "users",
+					FORMAT:     "JSON",
+				},
+			},
+		},
 		{
 			s: `CREATE STREAM demo (
 					USERID BIGINT,
@@ -67,7 +86,6 @@ func TestParser_ParseCreateStream(t *testing.T) {
 				},
 			},
 		},
-
 		{
 			s: `CREATE STREAM demo (
 					USERID BIGINT,
@@ -86,7 +104,6 @@ func TestParser_ParseCreateStream(t *testing.T) {
 				},
 			},
 		},
-
 		{
 			s: `CREATE STREAM demo (
 					ADDRESSES ARRAY(STRUCT(STREET_NAME STRING, NUMBER BIGINT)),

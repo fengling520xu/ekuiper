@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,9 +15,11 @@
 package planner
 
 import (
+	"sort"
+
 	"github.com/modern-go/reflect2"
 
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
 )
 
 // LookupPlan is the plan for table lookup and then merged/joined
@@ -133,12 +135,14 @@ func (p *LookupPlan) validateAndExtractCondition() bool {
 					return false
 				}
 				kset[lref.Name] = struct{}{}
+				p.keys = append(p.keys, lref.Name)
 				p.valvars = append(p.valvars, rref)
 			} else if string(rref.StreamName) == strName {
 				if _, ok := kset[rref.Name]; ok {
 					return false
 				}
 				kset[rref.Name] = struct{}{}
+				p.keys = append(p.keys, rref.Name)
 				p.valvars = append(p.valvars, lref)
 			} else {
 				continue
@@ -149,6 +153,7 @@ func (p *LookupPlan) validateAndExtractCondition() bool {
 					return false
 				}
 				kset[lref.Name] = struct{}{}
+				p.keys = append(p.keys, lref.Name)
 				p.valvars = append(p.valvars, c.RHS)
 			} else {
 				continue
@@ -159,6 +164,7 @@ func (p *LookupPlan) validateAndExtractCondition() bool {
 					return false
 				}
 				kset[rref.Name] = struct{}{}
+				p.keys = append(p.keys, rref.Name)
 				p.valvars = append(p.valvars, c.LHS)
 			} else {
 				continue
@@ -167,14 +173,7 @@ func (p *LookupPlan) validateAndExtractCondition() bool {
 			continue
 		}
 	}
-	if len(kset) > 0 {
-		p.keys = make([]string, 0, len(kset))
-		for k := range kset {
-			p.keys = append(p.keys, k)
-		}
-		return true
-	}
-	return false
+	return len(kset) > 0
 }
 
 // flatConditions flat the join condition. Only binary condition of EQ and AND are allowed
@@ -197,20 +196,29 @@ func flatConditions(condition ast.Expr) ([]*ast.BinaryExpr, []ast.Expr) {
 func (p *LookupPlan) PruneColumns(fields []ast.Expr) error {
 	newFields := make([]ast.Expr, 0, len(fields))
 	isWildcard := false
-	strName := p.joinExpr.Name
+	lookupTableName := p.joinExpr.Name
 	fieldMap := make(map[string]struct{})
 	for _, field := range fields {
 		switch f := field.(type) {
 		case *ast.Wildcard:
 			isWildcard = true
 		case *ast.FieldRef:
-			if !isWildcard && (f.StreamName == ast.DefaultStream || string(f.StreamName) == strName) {
-				if f.Name == "*" {
-					isWildcard = true
-				} else {
-					fieldMap[f.Name] = struct{}{}
+			if !isWildcard {
+				if f.StreamName == ast.DefaultStream {
+					if f.Name == "*" {
+						isWildcard = true
+						continue
+					} else {
+						fieldMap[f.Name] = struct{}{}
+					}
+				} else if string(f.StreamName) == lookupTableName {
+					if f.Name == "*" {
+						isWildcard = true
+					} else {
+						fieldMap[f.Name] = struct{}{}
+					}
+					continue
 				}
-				continue
 			}
 		case *ast.SortField:
 			if !isWildcard {
@@ -224,6 +232,15 @@ func (p *LookupPlan) PruneColumns(fields []ast.Expr) error {
 		p.fields = make([]string, 0, len(fieldMap))
 		for k := range fieldMap {
 			p.fields = append(p.fields, k)
+		}
+		sort.Strings(p.fields)
+	}
+	for _, f := range getFields(p.joinExpr.Expr) {
+		fr, ok := f.(*ast.FieldRef)
+		if ok {
+			if fr.IsColumn() && string(fr.StreamName) != lookupTableName {
+				newFields = append(newFields, fr)
+			}
 		}
 	}
 	return p.baseLogicalPlan.PruneColumns(newFields)

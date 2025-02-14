@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,12 +19,14 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
-	"github.com/lf-edge/ekuiper/internal/pkg/store"
-	"github.com/lf-edge/ekuiper/internal/testx"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/store"
+	"github.com/lf-edge/ekuiper/v2/internal/testx"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
 func TestPlannerGraphValidate(t *testing.T) {
@@ -596,9 +598,7 @@ func TestPlannerGraphValidate(t *testing.T) {
 						"nodeType": "mqtt",
 						"props": {
 							"datasource": "demo",
-							"format": "protobuf",
-							"schemaMessage": "PropertiesReport",
-							"schemaName": "EventBusMessage",
+							"format": "json",
 							"shared": false
 						}
 					}
@@ -620,26 +620,26 @@ func TestPlannerGraphValidate(t *testing.T) {
 
 	t.Logf("The test bucket size is %d.\n\n", len(tests))
 	for i, tt := range tests {
-		rg := &api.RuleGraph{}
+		rg := &def.RuleGraph{}
 		err := json.Unmarshal([]byte(tt.graph), rg)
 		if err != nil {
 			t.Error(err)
 			continue
 		}
-		_, err = PlanByGraph(&api.Rule{
+		_, err = PlanByGraph(&def.Rule{
 			Triggered: false,
 			Id:        fmt.Sprintf("rule%d", i),
 			Name:      fmt.Sprintf("rule%d", i),
 			Graph:     rg,
-			Options: &api.RuleOption{
+			Options: &def.RuleOption{
 				IsEventTime:        false,
 				LateTol:            1000,
 				Concurrency:        1,
 				BufferLength:       1024,
 				SendMetaToSink:     false,
 				SendError:          true,
-				Qos:                api.AtMostOnce,
-				CheckpointInterval: 300000,
+				Qos:                def.AtMostOnce,
+				CheckpointInterval: cast.DurationConf(30 * time.Second),
 			},
 		})
 		if !reflect.DeepEqual(tt.err, testx.Errstring(err)) {
@@ -963,25 +963,25 @@ func TestPlannerGraphWithStream(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			rg := &api.RuleGraph{}
+			rg := &def.RuleGraph{}
 			err := json.Unmarshal([]byte(tc.graph), rg)
 			if err != nil {
 				t.Error(err)
 				return
 			}
-			_, err = PlanByGraph(&api.Rule{
+			_, err = PlanByGraph(&def.Rule{
 				Triggered: false,
 				Id:        "test",
 				Graph:     rg,
-				Options: &api.RuleOption{
+				Options: &def.RuleOption{
 					IsEventTime:        false,
 					LateTol:            1000,
 					Concurrency:        1,
 					BufferLength:       1024,
 					SendMetaToSink:     false,
 					SendError:          true,
-					Qos:                api.AtMostOnce,
-					CheckpointInterval: 300000,
+					Qos:                def.AtMostOnce,
+					CheckpointInterval: cast.DurationConf(30 * time.Second),
 				},
 			})
 			if tc.err == nil {

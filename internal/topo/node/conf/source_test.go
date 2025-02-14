@@ -1,4 +1,4 @@
-// Copyright 2022 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,13 +15,27 @@
 package conf
 
 import (
-	"reflect"
 	"testing"
 
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/connection"
+	mockContext "github.com/lf-edge/ekuiper/v2/pkg/mock/context"
 )
 
 func TestGetSourceConf(t *testing.T) {
+	connection.InitConnectionManager4Test()
+	ctx := mockContext.NewMockContext("1", "2")
+	_, err := connection.CreateNamedConnection(ctx, "test11", "mock", map[string]any{
+		"a": 1,
+	})
+	require.NoError(t, err)
+	require.NoError(t, conf.WriteCfgIntoKVStorage("sources", "mqtt", "test11", map[string]interface{}{
+		"connectionSelector": "test11",
+	}))
 	type args struct {
 		sourceType string
 		options    *ast.Options
@@ -36,14 +50,24 @@ func TestGetSourceConf(t *testing.T) {
 			args: args{
 				sourceType: "mqtt",
 				options: &ast.Options{
-					CONF_KEY: "",
+					CONF_KEY:   "",
+					DATASOURCE: "abc",
 				},
 			},
 			want: map[string]interface{}{
-				"qos":    1,
-				"server": "tcp://127.0.0.1:1883",
-				"format": "json",
-				"key":    "",
+				"server":             "tcp://127.0.0.1:1883",
+				"format":             "json",
+				"key":                "",
+				"insecureSkipVerify": false,
+				"protocolVersion":    "3.1.1",
+				"qos":                1,
+				"datasource":         "abc",
+				"delimiter":          "",
+				"retainSize":         0,
+				"schemaId":           "",
+				"strictValidation":   false,
+				"timestamp":          "",
+				"timestampFormat":    "",
 			},
 		},
 		{
@@ -51,22 +75,58 @@ func TestGetSourceConf(t *testing.T) {
 			args: args{
 				sourceType: "mqtt",
 				options: &ast.Options{
-					CONF_KEY: "Demo_conf",
+					CONF_KEY:   "Demo_conf",
+					DATASOURCE: "abc",
 				},
 			},
 			want: map[string]interface{}{
-				"qos":    0,
-				"server": "tcp://10.211.55.6:1883",
-				"format": "json",
-				"key":    "",
+				"server":             "tcp://127.0.0.1:1883",
+				"format":             "json",
+				"key":                "",
+				"insecureSkipVerify": false,
+				"protocolVersion":    "3.1.1",
+				"qos":                1,
+				"datasource":         "abc",
+				"delimiter":          "",
+				"retainSize":         0,
+				"schemaId":           "",
+				"strictValidation":   false,
+				"timestamp":          "",
+				"timestampFormat":    "",
+			},
+		},
+		{
+			name: "connTest",
+			args: args{
+				sourceType: "mqtt",
+				options: &ast.Options{
+					CONF_KEY:   "test11",
+					DATASOURCE: "abc",
+				},
+			},
+			want: map[string]interface{}{
+				"server":             "tcp://127.0.0.1:1883",
+				"format":             "json",
+				"key":                "",
+				"insecureSkipVerify": false,
+				"protocolVersion":    "3.1.1",
+				"qos":                1,
+				"datasource":         "abc",
+				"delimiter":          "",
+				"retainSize":         0,
+				"schemaId":           "",
+				"strictValidation":   false,
+				"timestamp":          "",
+				"timestampFormat":    "",
+				"connectionSelector": "test11",
+				"a":                  1,
 			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := GetSourceConf(tt.args.sourceType, tt.args.options); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("GetSourceConf() = %v, want %v", got, tt.want)
-			}
+			got := GetSourceConf(tt.args.sourceType, tt.args.options)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

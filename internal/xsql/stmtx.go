@@ -19,10 +19,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/cast"
-	"github.com/lf-edge/ekuiper/pkg/errorx"
-	"github.com/lf-edge/ekuiper/pkg/kv"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/errorx"
+	"github.com/lf-edge/ekuiper/v2/pkg/kv"
 )
 
 func GetStreams(stmt *ast.SelectStatement) (result []string) {
@@ -42,7 +42,12 @@ func GetStreams(stmt *ast.SelectStatement) (result []string) {
 	return
 }
 
-func GetStatementFromSql(sql string) (*ast.SelectStatement, error) {
+func GetStatementFromSql(sql string) (stmt *ast.SelectStatement, err error) {
+	defer func() {
+		if err != nil {
+			err = errorx.NewWithCode(errorx.ParserError, err.Error())
+		}
+	}()
 	parser := NewParser(strings.NewReader(sql))
 	if stmt, err := Language.Parse(parser); err != nil {
 		return nil, fmt.Errorf("Parse SQL %s error: %s.", sql, err)

@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,15 +17,17 @@ package processor
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/pkg/store"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/cast"
-	"github.com/lf-edge/ekuiper/pkg/errorx"
-	"github.com/lf-edge/ekuiper/pkg/kv"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/store"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/errorx"
+	"github.com/lf-edge/ekuiper/v2/pkg/kv"
+	"github.com/lf-edge/ekuiper/v2/pkg/validate"
 )
 
 type RuleProcessor struct {
@@ -49,7 +51,7 @@ func NewRuleProcessor() *RuleProcessor {
 	return processor
 }
 
-func (p *RuleProcessor) ExecCreateWithValidation(name, ruleJson string) (*api.Rule, error) {
+func (p *RuleProcessor) ExecCreateWithValidation(name, ruleJson string) (*def.Rule, error) {
 	rule, err := p.GetRuleByJson(name, ruleJson)
 	if err != nil {
 		return nil, err
@@ -76,12 +78,11 @@ func (p *RuleProcessor) ExecCreate(name, ruleJson string) error {
 	return nil
 }
 
-func (p *RuleProcessor) ExecUpdate(name, ruleJson string) (*api.Rule, error) {
+func (p *RuleProcessor) ExecUpdate(name, ruleJson string) (*def.Rule, error) {
 	rule, err := p.GetRuleByJson(name, ruleJson)
 	if err != nil {
 		return nil, err
 	}
-
 	err = p.db.Set(rule.Id, ruleJson)
 	if err != nil {
 		return nil, err
@@ -92,7 +93,7 @@ func (p *RuleProcessor) ExecUpdate(name, ruleJson string) (*api.Rule, error) {
 	return rule, nil
 }
 
-func (p *RuleProcessor) ExecReplaceRuleState(name string, triggered bool) (*api.Rule, error) {
+func (p *RuleProcessor) ExecReplaceRuleState(name string, triggered bool) (*def.Rule, error) {
 	rule, err := p.GetRuleById(name)
 	if err != nil {
 		return nil, err
@@ -122,46 +123,23 @@ func (p *RuleProcessor) GetRuleJson(id string) (string, error) {
 	return s1, nil
 }
 
-func (p *RuleProcessor) GetRuleById(id string) (*api.Rule, error) {
+func (p *RuleProcessor) GetRuleById(id string) (*def.Rule, error) {
 	var s1 string
 	f, _ := p.db.Get(id, &s1)
 	if !f {
 		return nil, errorx.NewWithCode(errorx.NOT_FOUND, fmt.Sprintf("Rule %s is not found.", id))
 	}
-	return p.GetRuleByJsonValidated(s1)
-}
-
-func (p *RuleProcessor) getDefaultRule(name, sql string) *api.Rule {
-	return &api.Rule{
-		Id:  name,
-		Sql: sql,
-		Options: &api.RuleOption{
-			IsEventTime:        false,
-			LateTol:            1000,
-			Concurrency:        1,
-			BufferLength:       1024,
-			SendMetaToSink:     false,
-			SendError:          true,
-			Qos:                api.AtMostOnce,
-			CheckpointInterval: 300000,
-			Restart: &api.RestartStrategy{
-				Attempts:     0,
-				Delay:        1000,
-				Multiplier:   2,
-				MaxDelay:     30000,
-				JitterFactor: 0.1,
-			},
-		},
-	}
+	return p.GetRuleByJsonValidated(id, s1)
 }
 
 // GetRuleByJsonValidated called when the json is getting from trusted source like db
-func (p *RuleProcessor) GetRuleByJsonValidated(ruleJson string) (*api.Rule, error) {
+func (p *RuleProcessor) GetRuleByJsonValidated(id, ruleJson string) (*def.Rule, error) {
 	opt := conf.Config.Rule
 	// set default rule options
-	rule := &api.Rule{
+	rule := &def.Rule{
 		Triggered: true,
 		Options:   clone(opt),
+		Id:        id,
 	}
 	if err := json.Unmarshal(cast.StringToBytes(ruleJson), &rule); err != nil {
 		return nil, fmt.Errorf("Parse rule %s error : %s.", ruleJson, err)
@@ -172,20 +150,20 @@ func (p *RuleProcessor) GetRuleByJsonValidated(ruleJson string) (*api.Rule, erro
 	return rule, nil
 }
 
-func (p *RuleProcessor) GetRuleByJson(id, ruleJson string) (*api.Rule, error) {
-	rule, err := p.GetRuleByJsonValidated(ruleJson)
+func (p *RuleProcessor) GetRuleByJson(id, ruleJson string) (*def.Rule, error) {
+	rule, err := p.GetRuleByJsonValidated(id, ruleJson)
 	if err != nil {
 		return rule, err
 	}
 	// validation
-	if rule.Id == "" && id == "" {
+	if rule.Id == "" {
 		return nil, fmt.Errorf("Missing rule id.")
 	}
 	if id != "" && rule.Id != "" && id != rule.Id {
 		return nil, fmt.Errorf("RuleId is not consistent with rule id.")
 	}
-	if rule.Id == "" {
-		rule.Id = id
+	if err := validateRuleID(rule.Id); err != nil {
+		return nil, err
 	}
 	if rule.Sql != "" {
 		if rule.Graph != nil {
@@ -209,8 +187,12 @@ func (p *RuleProcessor) GetRuleByJson(id, ruleJson string) (*api.Rule, error) {
 	return rule, nil
 }
 
-func clone(opt api.RuleOption) *api.RuleOption {
-	return &api.RuleOption{
+func validateRuleID(id string) error {
+	return validate.ValidateID(id)
+}
+
+func clone(opt def.RuleOption) *def.RuleOption {
+	return &def.RuleOption{
 		IsEventTime:        opt.IsEventTime,
 		LateTol:            opt.LateTol,
 		Concurrency:        opt.Concurrency,
@@ -219,14 +201,20 @@ func clone(opt api.RuleOption) *api.RuleOption {
 		SendError:          opt.SendError,
 		Qos:                opt.Qos,
 		CheckpointInterval: opt.CheckpointInterval,
-		Restart: &api.RestartStrategy{
-			Attempts:     opt.Restart.Attempts,
-			Delay:        opt.Restart.Delay,
-			Multiplier:   opt.Restart.Multiplier,
-			MaxDelay:     opt.Restart.MaxDelay,
-			JitterFactor: opt.Restart.JitterFactor,
+		RestartStrategy: &def.RestartStrategy{
+			Attempts:     opt.RestartStrategy.Attempts,
+			Delay:        opt.RestartStrategy.Delay,
+			Multiplier:   opt.RestartStrategy.Multiplier,
+			MaxDelay:     opt.RestartStrategy.MaxDelay,
+			JitterFactor: opt.RestartStrategy.JitterFactor,
 		},
 	}
+}
+
+func (p *RuleProcessor) ExecExists(name string) bool {
+	var s1 string
+	f, _ := p.db.Get(name, &s1)
+	return f
 }
 
 func (p *RuleProcessor) ExecDesc(name string) (string, error) {
@@ -251,24 +239,25 @@ func (p *RuleProcessor) GetAllRulesJson() (map[string]string, error) {
 	return p.db.All()
 }
 
-func (p *RuleProcessor) ExecDrop(name string) (string, error) {
-	result := fmt.Sprintf("Rule %s is dropped.", name)
-	var ruleJson string
+func (p *RuleProcessor) ExecDrop(name string) error {
+	var (
+		ruleJson string
+		allErr   error
+	)
 	if ok, _ := p.db.Get(name, &ruleJson); ok {
 		if err := cleanSinkCache(name); err != nil {
-			result = fmt.Sprintf("%s. Clean sink cache faile: %s.", result, err)
+			allErr = errors.Join(allErr, fmt.Errorf("Clean sink cache failed: %v.", err))
 		}
 		if err := cleanCheckpoint(name); err != nil {
-			result = fmt.Sprintf("%s. Clean checkpoint cache faile: %s.", result, err)
+			allErr = errors.Join(allErr, fmt.Errorf("Clean checkpoint cache failed: %v.", err))
 		}
 
 	}
 	err := p.db.Delete(name)
 	if err != nil {
-		return "", err
-	} else {
-		return result, nil
+		allErr = errors.Join(allErr, fmt.Errorf("Delete rule %s failed: %v.", name, err))
 	}
+	return allErr
 }
 
 func cleanCheckpoint(name string) error {

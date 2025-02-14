@@ -19,11 +19,11 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	kctx "github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/internal/topo/state"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	kctx "github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/state"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
 )
 
 func TestValidation(t *testing.T) {
@@ -88,7 +88,7 @@ func TestExec(t *testing.T) {
 	}
 	contextLogger := conf.Log.WithField("rule", "testExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 1)
 	var nilResult ResultCols
 	tests := []struct {
@@ -199,7 +199,7 @@ func TestExecIgnoreNull(t *testing.T) {
 	}
 	contextLogger := conf.Log.WithField("rule", "testExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 1)
 	var nilResult ResultCols
 	tests := []struct {

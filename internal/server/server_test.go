@@ -1,4 +1,4 @@
-// Copyright 2023 EMQ Technologies Co., Ltd.
+// Copyright 2023-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,15 +15,18 @@
 package server
 
 import (
+	"context"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
+	"github.com/Rookiecom/cpuprofile"
 	"github.com/stretchr/testify/require"
 
-	"github.com/lf-edge/ekuiper/internal/topo/rule"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/schedule"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
 func TestHandleScheduleRule(t *testing.T) {
@@ -36,88 +39,175 @@ func TestHandleScheduleRule(t *testing.T) {
 	require.NoError(t, err)
 	now = now.In(cast.GetConfiguredTimeZone())
 	testcases := []struct {
-		state  string
-		begin  string
-		end    string
-		action scheduleRuleAction
+		Options *def.RuleOption
+		action  scheduleRuleAction
 	}{
 		{
-			state:  "Running",
-			begin:  "2006-01-02 15:04:01",
-			end:    "2006-01-02 15:04:06",
-			action: scheduleRuleActionDoNothing,
-		},
-		{
-			state:  rule.RuleWait,
-			begin:  "2006-01-02 15:04:01",
-			end:    "2006-01-02 15:04:06",
-			action: scheduleRuleActionStart,
-		},
-		{
-			state:  rule.RuleTerminated,
-			begin:  "2006-01-02 15:04:01",
-			end:    "2006-01-02 15:04:04",
-			action: scheduleRuleActionDoNothing,
-		},
-		{
-			state:  rule.RuleStarted,
-			begin:  "2006-01-02 15:04:01",
-			end:    "2006-01-02 15:04:04",
-			action: scheduleRuleActionStop,
-		},
-	}
-	for i, tc := range testcases {
-		r := &api.Rule{
-			Triggered: true,
-			Options: &api.RuleOption{
+			Options: &def.RuleOption{
 				Cron:     "",
 				Duration: "",
-				CronDatetimeRange: []api.DatetimeRange{
+				CronDatetimeRange: []schedule.DatetimeRange{
 					{
-						Begin: tc.begin,
-						End:   tc.end,
+						Begin: "2006-01-02 15:04:01",
+						End:   "2006-01-02 15:04:06",
 					},
 				},
 			},
-		}
-		scheduleRuleSignal := handleScheduleRule(now, r, tc.state)
-		require.Equal(t, tc.action, scheduleRuleSignal, fmt.Sprintf("case %v", i))
+			action: scheduleRuleActionStart,
+		},
+		{
+			Options: &def.RuleOption{
+				Cron:     "",
+				Duration: "",
+				CronDatetimeRange: []schedule.DatetimeRange{
+					{
+						Begin: "2006-01-02 15:04:01",
+						End:   "2006-01-02 15:04:06",
+					},
+				},
+			},
+			action: scheduleRuleActionStart,
+		},
+		{
+			Options: &def.RuleOption{
+				Cron:     "",
+				Duration: "",
+				CronDatetimeRange: []schedule.DatetimeRange{
+					{
+						Begin: "2006-01-02 15:04:01",
+						End:   "2006-01-02 15:04:04",
+					},
+				},
+			},
+			action: scheduleRuleActionStop,
+		},
+		{
+			Options: &def.RuleOption{
+				Cron:     "",
+				Duration: "",
+				CronDatetimeRange: []schedule.DatetimeRange{
+					{
+						Begin: "2006-01-02 15:04:01",
+						End:   "2006-01-02 15:04:04",
+					},
+				},
+			},
+			action: scheduleRuleActionStop,
+		},
+		{
+			Options: &def.RuleOption{
+				Cron:     "4 15 * * *",
+				Duration: "10s",
+			},
+			action: scheduleRuleActionStart,
+		},
+		{
+			Options: &def.RuleOption{
+				Cron:     "4 15 * * *",
+				Duration: "1s",
+			},
+			action: scheduleRuleActionStop,
+		},
+		{
+			Options: &def.RuleOption{
+				Cron:     "4 15 * * *",
+				Duration: "10s",
+				CronDatetimeRange: []schedule.DatetimeRange{
+					{
+						Begin: "2006-01-02 15:04:01",
+						End:   "2006-01-02 15:04:06",
+					},
+				},
+			},
+			action: scheduleRuleActionStart,
+		},
+		{
+			Options: &def.RuleOption{
+				Cron:     "4 15 * * *",
+				Duration: "10s",
+				CronDatetimeRange: []schedule.DatetimeRange{
+					{
+						Begin: "2006-01-02 15:04:01",
+						End:   "2006-01-02 15:04:02",
+					},
+				},
+			},
+			action: scheduleRuleActionStop,
+		},
+		{
+			Options: nil,
+			action:  scheduleRuleActionDoNothing,
+		},
+		{
+			Options: &def.RuleOption{
+				CronDatetimeRange: []schedule.DatetimeRange{
+					{
+						Begin: "1332##2",
+						End:   "25344@@@",
+					},
+				},
+			},
+			action: scheduleRuleActionDoNothing,
+		},
+		{
+			Options: &def.RuleOption{
+				Cron:     "###",
+				Duration: "###",
+			},
+			action: scheduleRuleActionDoNothing,
+		},
+	}
+	for i, tc := range testcases {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			r := &def.Rule{
+				Triggered: true,
+				Options:   tc.Options,
+			}
+			scheduleRuleSignal := handleScheduleRule(now, r)
+			require.Equal(t, tc.action, scheduleRuleSignal, fmt.Sprintf("case %v", i))
+		})
 	}
 }
 
 func TestRunScheduleRuleChecker(t *testing.T) {
-	exit := make(chan struct{})
-	go runScheduleRuleCheckerByInterval(3*time.Second, exit)
+	ctx, cancel := context.WithCancel(context.Background())
+	go runScheduleRuleCheckerByInterval(3*time.Second, ctx)
 	time.Sleep(1 * time.Second)
-	exit <- struct{}{}
+	cancel()
 }
 
-func TestHandleScheduleRuleState(t *testing.T) {
-	defer func() {
-		cast.SetTimeZone(cast.GetConfiguredTimeZone().String())
-	}()
-	err := cast.SetTimeZone("UTC")
-	require.NoError(t, err)
-	r := &api.Rule{}
-	r.Options = &api.RuleOption{}
-	now, err := time.Parse("2006-01-02 15:04:05", "2006-01-02 15:04:05")
-	require.NoError(t, err)
-	require.NoError(t, handleScheduleRuleState(now, r, rule.RuleStarted))
-	require.NoError(t, handleScheduleRuleState(now, r, rule.RuleWait))
-	r.Options.CronDatetimeRange = []api.DatetimeRange{
-		{
-			Begin: "2006-01-02 15:04:01",
-			End:   "2006-01-02 15:04:06",
-		},
+type testProfile struct{}
+
+func (test *testProfile) StartCPUProfiler(ctx context.Context, t time.Duration) error {
+	return nil
+}
+
+func (test *testProfile) EnableWindowAggregator(window int) {
+	return
+}
+
+func (test *testProfile) GetWindowData() cpuprofile.DataSetAggregateMap {
+	return cpuprofile.DataSetAggregateMap{}
+}
+
+func TestStartCPUProfiling(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	ekuiperProfiler := &ekuiperProfile{}
+	if err := ekuiperProfiler.StartCPUProfiler(ctx, 1000*time.Millisecond); err != nil {
+		t.Fatal(err)
 	}
-	require.NoError(t, handleScheduleRuleState(now, r, rule.RuleStarted))
-	require.NoError(t, handleScheduleRuleState(now, r, rule.RuleWait))
-	r.Options.CronDatetimeRange = []api.DatetimeRange{
-		{
-			Begin: "2006-01-02 15:04:01",
-			End:   "2006-01-02 15:04:02",
-		},
+	ekuiperProfiler.EnableWindowAggregator(5)
+	data := ekuiperProfiler.GetWindowData()
+	if data == nil {
+		t.Fatal("cpu profiling data is nil")
 	}
-	require.NoError(t, handleScheduleRuleState(now, r, rule.RuleStarted))
-	require.NoError(t, handleScheduleRuleState(now, r, rule.RuleWait))
+
+	profiler := &testProfile{}
+	err := StartCPUProfiling(ctx, profiler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Second)
+	cancel()
 }

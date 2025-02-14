@@ -31,9 +31,9 @@ import (
 	"github.com/gorilla/mux"
 	"google.golang.org/grpc"
 
-	kconf "github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/topo/topotest"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	kconf "github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/topotest"
 )
 
 type RestHelloRequest struct {
@@ -248,9 +248,9 @@ func TestRestService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		}, {
 			Name: `TestRestRule2`,
@@ -272,9 +272,9 @@ func TestRestService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		}, {
 			Name: `TestRestRule3`,
@@ -296,9 +296,9 @@ func TestRestService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 			//}, {
 			//	Name: `TestRestRule3`,
@@ -320,9 +320,9 @@ func TestRestService(t *testing.T) {
 			//		"op_2_project_0_records_in_total":   int64(3),
 			//		"op_2_project_0_records_out_total":  int64(3),
 			//
-			//		"sink_mockSink_0_exceptions_total":  int64(0),
-			//		"sink_mockSink_0_records_in_total":  int64(3),
-			//		"sink_mockSink_0_records_out_total": int64(3),
+			//		"sink_memory_0_0_exceptions_total":  int64(0),
+			//		"sink_memory_0_0_records_in_total":  int64(3),
+			//		"sink_memory_0_0_records_out_total": int64(3),
 			//	},
 		}, {
 			Name: `TestRestRule4`,
@@ -347,9 +347,9 @@ func TestRestService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		}, {
 			Name: `TestRestRule5`,
@@ -371,9 +371,9 @@ func TestRestService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		}, {
 			Name: `TestRestRule6`,
@@ -395,9 +395,9 @@ func TestRestService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		}, {
 			Name: `TestRestRule7`,
@@ -416,9 +416,9 @@ func TestRestService(t *testing.T) {
 				"op_2_filter_0_records_in_total":   int64(5),
 				"op_2_filter_0_records_out_total":  int64(2),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(2),
-				"sink_mockSink_0_records_out_total": int64(2),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(2),
+				"sink_memory_0_0_records_out_total": int64(2),
 			},
 		}, {
 			Name: `TestRestRule8`,
@@ -437,9 +437,9 @@ func TestRestService(t *testing.T) {
 				"op_2_filter_0_records_in_total":   int64(5),
 				"op_2_filter_0_records_out_total":  int64(2),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(2),
-				"sink_mockSink_0_records_out_total": int64(2),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(2),
+				"sink_memory_0_0_records_out_total": int64(2),
 			},
 		}, {
 			Name: `TestRestRule9`,
@@ -461,9 +461,9 @@ func TestRestService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 			// TODO support * as one of the parameters
 			//},{
@@ -486,9 +486,9 @@ func TestRestService(t *testing.T) {
 			//		"op_2_project_0_records_in_total":   int64(3),
 			//		"op_2_project_0_records_out_total":  int64(3),
 			//
-			//		"sink_mockSink_0_exceptions_total":  int64(0),
-			//		"sink_mockSink_0_records_in_total":  int64(3),
-			//		"sink_mockSink_0_records_out_total": int64(3),
+			//		"sink_memory_0_0_exceptions_total":  int64(0),
+			//		"sink_memory_0_0_records_in_total":  int64(3),
+			//		"sink_memory_0_0_records_out_total": int64(3),
 			//	},
 		}, {
 			Name: `TestRestRule11`,
@@ -510,9 +510,9 @@ func TestRestService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		}, {
 			Name: `TestRestRule12`,
@@ -546,14 +546,14 @@ func TestRestService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		},
 	}
 	topotest.HandleStream(true, streamList, t)
-	topotest.DoRuleTest(t, tests, 0, &api.RuleOption{
+	topotest.DoRuleTest(t, tests, &def.RuleOption{
 		BufferLength: 100,
 		SendError:    true,
 	}, 0)
@@ -714,9 +714,9 @@ func TestGrpcService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		}, {
 			Name: `TestRestRule2`,
@@ -738,22 +738,22 @@ func TestGrpcService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		}, {
 			Name: `TestRestRule3`,
 			Sql:  `SELECT getFeatureFromGrpc(self)->feature[0]->box->h FROM fakeBin`,
 			R: [][]map[string]interface{}{
 				{{
-					"kuiper_field_0": float64(106), // Convert by the testing tool
+					"kuiper_field_0": int64(106),
 				}},
 				{{
-					"kuiper_field_0": float64(107),
+					"kuiper_field_0": int64(107),
 				}},
 				{{
-					"kuiper_field_0": float64(108),
+					"kuiper_field_0": int64(108),
 				}},
 			},
 			M: map[string]interface{}{
@@ -762,9 +762,9 @@ func TestGrpcService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		}, {
 			Name: `TestRestRule4`,
@@ -789,9 +789,9 @@ func TestGrpcService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		}, {
 			Name: `TestRestRule5`,
@@ -813,14 +813,14 @@ func TestGrpcService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		},
 	}
 	topotest.HandleStream(true, streamList, t)
-	topotest.DoRuleTest(t, tests, 0, &api.RuleOption{
+	topotest.DoRuleTest(t, tests, &def.RuleOption{
 		BufferLength: 100,
 		SendError:    true,
 	}, 0)
@@ -926,9 +926,9 @@ func TestSchemalessService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		}, {
 			Name: `TestRestRule2`,
@@ -950,9 +950,9 @@ func TestSchemalessService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		}, {
 			Name: `TestRestRule3`,
@@ -974,9 +974,9 @@ func TestSchemalessService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		}, {
 			Name: `TestRestRule4`,
@@ -1001,9 +1001,9 @@ func TestSchemalessService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		}, {
 			Name: `TestRestRule5`,
@@ -1025,9 +1025,9 @@ func TestSchemalessService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		}, {
 			Name: `TestRestRule6`,
@@ -1049,14 +1049,14 @@ func TestSchemalessService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		},
 	}
 	topotest.HandleStream(true, streamList, t)
-	topotest.DoRuleTest(t, tests, 0, &api.RuleOption{
+	topotest.DoRuleTest(t, tests, &def.RuleOption{
 		BufferLength: 100,
 		SendError:    true,
 	}, 0)

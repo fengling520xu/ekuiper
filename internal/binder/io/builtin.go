@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,87 +15,96 @@
 package io
 
 import (
-	"github.com/lf-edge/ekuiper/internal/io/file"
-	"github.com/lf-edge/ekuiper/internal/io/http"
-	"github.com/lf-edge/ekuiper/internal/io/memory"
-	"github.com/lf-edge/ekuiper/internal/io/mqtt"
-	"github.com/lf-edge/ekuiper/internal/io/neuron"
-	"github.com/lf-edge/ekuiper/internal/io/sink"
-	plugin2 "github.com/lf-edge/ekuiper/internal/plugin"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/binder"
+	"github.com/lf-edge/ekuiper/v2/internal/io/file"
+	"github.com/lf-edge/ekuiper/v2/internal/io/http"
+	"github.com/lf-edge/ekuiper/v2/internal/io/http/httpserver"
+	"github.com/lf-edge/ekuiper/v2/internal/io/memory"
+	"github.com/lf-edge/ekuiper/v2/internal/io/mqtt"
+	"github.com/lf-edge/ekuiper/v2/internal/io/neuron"
+	"github.com/lf-edge/ekuiper/v2/internal/io/simulator"
+	"github.com/lf-edge/ekuiper/v2/internal/io/sink"
+	"github.com/lf-edge/ekuiper/v2/internal/io/websocket"
+	plugin2 "github.com/lf-edge/ekuiper/v2/internal/plugin"
+	"github.com/lf-edge/ekuiper/v2/pkg/modules"
+	"github.com/lf-edge/ekuiper/v2/pkg/nng"
 )
 
-type (
-	NewSourceFunc       func() api.Source
-	NewLookupSourceFunc func() api.LookupSource
-	NewSinkFunc         func() api.Sink
-)
+func init() {
+	modules.RegisterSource("mqtt", mqtt.GetSource)
+	modules.RegisterSource("httppull", func() api.Source { return &http.HttpPullSource{} })
+	modules.RegisterSource("httppush", func() api.Source { return &http.HttpPushSource{} })
+	modules.RegisterSource("file", file.GetSource)
+	modules.RegisterSource("memory", func() api.Source { return memory.GetSource() })
+	modules.RegisterSource("neuron", neuron.GetSource)
+	modules.RegisterSource("websocket", func() api.Source { return websocket.GetSource() })
+	modules.RegisterSource("simulator", func() api.Source { return simulator.GetSource() })
 
-var (
-	sources = map[string]NewSourceFunc{
-		"mqtt":     func() api.Source { return &mqtt.MQTTSource{} },
-		"httppull": func() api.Source { return &http.PullSource{} },
-		"httppush": func() api.Source { return &http.PushSource{} },
-		"file":     func() api.Source { return &file.FileSource{} },
-		"memory":   func() api.Source { return memory.GetSource() },
-		"neuron":   func() api.Source { return neuron.GetSource() },
-	}
-	sinks = map[string]NewSinkFunc{
-		"log":         sink.NewLogSink,
-		"logToMemory": sink.NewLogSinkToMemory,
-		"mqtt":        func() api.Sink { return &mqtt.MQTTSink{} },
-		"rest":        func() api.Sink { return &http.RestSink{} },
-		"nop":         func() api.Sink { return &sink.NopSink{} },
-		"memory":      func() api.Sink { return memory.GetSink() },
-		"neuron":      func() api.Sink { return neuron.GetSink() },
-		"file":        func() api.Sink { return file.File() },
-	}
-	lookupSources = map[string]NewLookupSourceFunc{
-		"memory":   func() api.LookupSource { return memory.GetLookupSource() },
-		"httppull": func() api.LookupSource { return http.GetLookUpSource() },
-	}
-)
+	modules.RegisterSink("log", sink.NewLogSink)
+	modules.RegisterSink("logToMemory", sink.NewLogSinkToMemory)
+	modules.RegisterSink("mqtt", mqtt.GetSink)
+	modules.RegisterSink("rest", func() api.Sink { return http.GetSink() })
+	modules.RegisterSink("nop", func() api.Sink { return &sink.NopSink{} })
+	modules.RegisterSink("memory", func() api.Sink { return memory.GetSink() })
+	modules.RegisterSink("neuron", neuron.GetSink)
+	modules.RegisterSink("file", file.GetSink)
+	modules.RegisterSink("websocket", func() api.Sink { return websocket.GetSink() })
+
+	modules.RegisterLookupSource("memory", memory.GetLookupSource)
+	modules.RegisterLookupSource("httppull", http.GetLookUpSource)
+
+	modules.RegisterConnection("mqtt", mqtt.CreateConnection)
+	modules.RegisterConnection("nng", nng.CreateConnection)
+	modules.RegisterConnection("httppush", httpserver.CreateConnection)
+	modules.RegisterConnection("websocket", httpserver.CreateWebsocketConnection)
+}
 
 type Manager struct{}
 
 func (m *Manager) Source(name string) (api.Source, error) {
-	if s, ok := sources[name]; ok {
+	if s, ok := modules.Sources[name]; ok {
 		return s(), nil
 	}
 	return nil, nil
 }
 
 func (m *Manager) SourcePluginInfo(name string) (plugin2.EXTENSION_TYPE, string, string) {
-	if _, ok := sources[name]; ok {
+	if _, ok := modules.Sources[name]; ok {
 		return plugin2.INTERNAL, "", ""
 	} else {
 		return plugin2.NONE_EXTENSION, "", ""
 	}
 }
 
-func (m *Manager) LookupSource(name string) (api.LookupSource, error) {
-	if s, ok := lookupSources[name]; ok {
+func (m *Manager) LookupSource(name string) (api.Source, error) {
+	if s, ok := modules.LookupSources[name]; ok {
 		return s(), nil
 	}
 	return nil, nil
 }
 
 func (m *Manager) Sink(name string) (api.Sink, error) {
-	if s, ok := sinks[name]; ok {
+	if s, ok := modules.Sinks[name]; ok {
 		return s(), nil
 	}
 	return nil, nil
 }
 
 func (m *Manager) SinkPluginInfo(name string) (plugin2.EXTENSION_TYPE, string, string) {
-	if _, ok := sinks[name]; ok {
+	if _, ok := modules.Sinks[name]; ok {
 		return plugin2.INTERNAL, "", ""
 	} else {
 		return plugin2.NONE_EXTENSION, "", ""
 	}
 }
 
-var m = &Manager{}
+var (
+	m                      = &Manager{}
+	_ binder.SourceFactory = m
+	_ binder.SinkFactory   = m
+)
 
 func GetManager() *Manager {
 	return m

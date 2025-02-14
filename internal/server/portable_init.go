@@ -1,4 +1,4 @@
-// Copyright 2022 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,22 +13,23 @@
 // limitations under the License.
 
 //go:build portable || !core
-// +build portable !core
 
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 
 	"github.com/gorilla/mux"
 
-	"github.com/lf-edge/ekuiper/internal/binder"
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/plugin"
-	"github.com/lf-edge/ekuiper/internal/plugin/portable"
-	"github.com/lf-edge/ekuiper/pkg/errorx"
+	"github.com/lf-edge/ekuiper/v2/internal/binder"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin/portable"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin/portable/runtime"
+	"github.com/lf-edge/ekuiper/v2/pkg/errorx"
 )
 
 var portableManager *portable.Manager
@@ -51,6 +52,11 @@ func (p portableComp) register() {
 func (p portableComp) rest(r *mux.Router) {
 	r.HandleFunc("/plugins/portables", portablesHandler).Methods(http.MethodGet, http.MethodPost)
 	r.HandleFunc("/plugins/portables/{name}", portableHandler).Methods(http.MethodGet, http.MethodDelete, http.MethodPut)
+	r.HandleFunc("/plugins/portables/{name}/status", portableStatusHandler).Methods(http.MethodGet)
+}
+
+func (p portableComp) exporter() ConfManager {
+	return portableExporter{}
 }
 
 func portablesHandler(w http.ResponseWriter, r *http.Request) {
@@ -75,6 +81,19 @@ func portablesHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 		fmt.Fprintf(w, "portable plugin %s is created", sd.GetName())
 	}
+}
+
+func portableStatusHandler(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	vars := mux.Vars(r)
+	name := vars["name"]
+	status, ok := runtime.GetPluginInsManager().GetPluginInsStatus(name)
+	if !ok {
+		handleError(w, errorx.NewWithCode(errorx.NOT_FOUND, "not found"), fmt.Sprintf("portable plugin %s not found", name), logger)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	jsonResponse(status, w, logger)
 }
 
 func portableHandler(w http.ResponseWriter, r *http.Request) {
@@ -119,22 +138,24 @@ func portableHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func portablePluginsReset() {
+type portableExporter struct{}
+
+func (e portableExporter) Import(ctx context.Context, plugins map[string]string) map[string]string {
+	return portableManager.PluginImport(ctx, plugins)
+}
+
+func (e portableExporter) PartialImport(ctx context.Context, plugins map[string]string) map[string]string {
+	return portableManager.PluginPartialImport(ctx, plugins)
+}
+
+func (e portableExporter) Export() map[string]string {
+	return portableManager.GetAllPlugins()
+}
+
+func (e portableExporter) Status() map[string]string {
+	return portableManager.GetAllPluginsStatus()
+}
+
+func (e portableExporter) Reset() {
 	portableManager.UninstallAllPlugins()
-}
-
-func portablePluginExport() map[string]string {
-	return portableManager.GetAllPlugins()
-}
-
-func portablePluginStatusExport() map[string]string {
-	return portableManager.GetAllPlugins()
-}
-
-func portablePluginImport(plugins map[string]string) map[string]string {
-	return portableManager.PluginImport(plugins)
-}
-
-func portablePluginPartialImport(plugins map[string]string) map[string]string {
-	return portableManager.PluginPartialImport(plugins)
 }

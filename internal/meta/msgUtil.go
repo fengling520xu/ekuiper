@@ -1,4 +1,4 @@
-// Copyright 2021 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 
 	"gopkg.in/ini.v1"
 
-	kconf "github.com/lf-edge/ekuiper/internal/conf"
+	kconf "github.com/lf-edge/ekuiper/v2/internal/conf"
 )
 
 var gUimsg map[string]*ini.File
@@ -52,7 +52,6 @@ func ReadUiMsgDir() error {
 
 	for _, entry := range dirEntries {
 		fName := entry.Name()
-		kconf.Log.Infof("uiMsg file : %s", fName)
 		fPath := path.Join(dir, fName)
 		if conf, err := ini.Load(fPath); nil != err {
 			return err

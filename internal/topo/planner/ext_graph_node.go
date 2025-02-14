@@ -1,4 +1,4 @@
-// Copyright 2023 EMQ Technologies Co., Ltd.
+// Copyright 2023-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,14 +19,15 @@ package planner
 import (
 	"fmt"
 
-	"github.com/lf-edge/ekuiper/internal/topo/graph"
-	"github.com/lf-edge/ekuiper/internal/topo/operator"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/graph"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/node"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/operator"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
 func init() {
-	extNodes["script"] = func(name string, props map[string]interface{}, options *api.RuleOption) (api.TopNode, error) {
+	extNodes["script"] = func(name string, props map[string]interface{}, options *def.RuleOption) (node.TopNode, error) {
 		sop, err := parseScript(props)
 		if err != nil {
 			return nil, err

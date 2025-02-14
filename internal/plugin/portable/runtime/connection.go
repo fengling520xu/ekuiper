@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,10 +15,13 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+	"github.com/pingcap/failpoint"
 	"go.nanomsg.org/mangos/v3"
 	"go.nanomsg.org/mangos/v3/protocol/pull"
 	"go.nanomsg.org/mangos/v3/protocol/push"
@@ -26,8 +29,7 @@ import (
 	// introduce ipc
 	_ "go.nanomsg.org/mangos/v3/transport/ipc"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
 )
 
 // TODO to design timeout strategy
@@ -92,7 +94,7 @@ func (r *NanomsgReqChannel) Handshake() error {
 	if err != nil {
 		return err
 	}
-	err = r.sock.SetOption(mangos.OptionRecvDeadline, time.Duration(conf.Config.Portable.InitTimeout)*time.Millisecond)
+	err = r.sock.SetOption(mangos.OptionRecvDeadline, time.Duration(conf.Config.Portable.InitTimeout))
 	if err != nil {
 		return err
 	}
@@ -149,7 +151,7 @@ func (r *NanomsgReqRepChannel) Req(arg []byte) ([]byte, error) {
 			}
 		}
 		if err != nil {
-			return nil, fmt.Errorf("can't send message on function rep socket: %s", err.Error())
+			return nil, err
 		}
 		result, e := r.sock.Recv()
 		if e != nil {
@@ -174,7 +176,8 @@ func CreateSourceChannel(ctx api.StreamContext) (DataInChannel, error) {
 		return nil, fmt.Errorf("can't get new pull socket: %s", err)
 	}
 	setSockOptions(sock, map[string]interface{}{
-		mangos.OptionRecvDeadline: 500 * time.Millisecond,
+		mangos.OptionRecvDeadline: conf.Config.Portable.RecvTimeout,
+		mangos.OptionMaxRecvSize:  0,
 	})
 	url := fmt.Sprintf("ipc:///tmp/%s_%s_%d.ipc", ctx.GetRuleId(), ctx.GetOpId(), ctx.GetInstanceId())
 	if err = listenWithRetry(sock, url); err != nil {
@@ -194,9 +197,10 @@ func CreateFunctionChannel(symbolName string) (DataReqChannel, error) {
 	}
 	// Function must send out data quickly and wait for the response with some buffer
 	setSockOptions(sock, map[string]interface{}{
-		mangos.OptionRecvDeadline: 5000 * time.Millisecond,
-		mangos.OptionSendDeadline: 1000 * time.Millisecond,
+		mangos.OptionRecvDeadline: conf.Config.Portable.RecvTimeout,
+		mangos.OptionSendDeadline: conf.Config.Portable.SendTimeout,
 		mangos.OptionRetryTime:    0,
+		mangos.OptionMaxRecvSize:  0,
 	})
 	url := fmt.Sprintf("ipc:///tmp/func_%s.ipc", symbolName)
 	if err = listenWithRetry(sock, url); err != nil {
@@ -215,7 +219,8 @@ func CreateSinkChannel(ctx api.StreamContext) (DataOutChannel, error) {
 		return nil, fmt.Errorf("can't get new push socket: %s", err)
 	}
 	setSockOptions(sock, map[string]interface{}{
-		mangos.OptionSendDeadline: 1000 * time.Millisecond,
+		mangos.OptionSendDeadline: conf.Config.Portable.SendTimeout,
+		mangos.OptionMaxRecvSize:  0,
 	})
 	url := fmt.Sprintf("ipc:///tmp/%s_%s_%d.ipc", ctx.GetRuleId(), ctx.GetOpId(), ctx.GetInstanceId())
 	if err = sock.DialOptions(url, dialOptions); err != nil {
@@ -225,7 +230,30 @@ func CreateSinkChannel(ctx api.StreamContext) (DataOutChannel, error) {
 	return sock, nil
 }
 
+func CreateSinkAckChannel(ctx api.StreamContext) (DataInChannel, error) {
+	var (
+		sock mangos.Socket
+		err  error
+	)
+	if sock, err = pull.NewSocket(); err != nil {
+		return nil, fmt.Errorf("can't get new pull socket: %s", err)
+	}
+	setSockOptions(sock, map[string]interface{}{
+		mangos.OptionRecvDeadline: 1000 * time.Millisecond,
+		mangos.OptionMaxRecvSize:  0,
+	})
+	url := fmt.Sprintf("ipc:///tmp/%s_%s_%d_ack.ipc", ctx.GetRuleId(), ctx.GetOpId(), ctx.GetInstanceId())
+	if err = listenWithRetry(sock, url); err != nil {
+		return nil, fmt.Errorf("can't listen on pull socket for %s: %s", url, err.Error())
+	}
+	conf.Log.Infof("sink ack channel created: %s", url)
+	return sock, nil
+}
+
 func CreateControlChannel(pluginName string) (ControlChannel, error) {
+	failpoint.Inject("CreateControlChannelErr", func() {
+		failpoint.Return(nil, errors.New("CreateControlChannelErr"))
+	})
 	var (
 		sock mangos.Socket
 		err  error
@@ -238,6 +266,7 @@ func CreateControlChannel(pluginName string) (ControlChannel, error) {
 	// thus, if the plugin exit, the control channel will be closed
 	setSockOptions(sock, map[string]interface{}{
 		mangos.OptionRecvDeadline: 1 * time.Hour,
+		mangos.OptionMaxRecvSize:  0,
 	})
 	url := fmt.Sprintf("ipc:///tmp/plugin_%s.ipc", pluginName)
 	if err = listenWithRetry(sock, url); err != nil {

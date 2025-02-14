@@ -1,4 +1,4 @@
-// Copyright 2023 EMQ Technologies Co., Ltd.
+// Copyright 2023-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,10 +15,12 @@
 package json
 
 import (
+	"encoding/json"
 	"os"
 	"testing"
 
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	mockContext "github.com/lf-edge/ekuiper/v2/pkg/mock/context"
 )
 
 func BenchmarkSimpleTuples(b *testing.B) {
@@ -100,20 +102,43 @@ func BenchmarkComplexTuplesWithSchema(b *testing.B) {
 }
 
 func benchmarkByFiles(filePath string, b *testing.B, schema map[string]*ast.JsonStreamField) {
+	ctx := mockContext.NewMockContext("test", "test")
 	payload, err := os.ReadFile(filePath)
 	if err != nil {
-		b.Fatalf(err.Error())
+		b.Fatal(err)
 	}
-	if schema != nil {
-		f := NewFastJsonConverter(schema)
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			f.Decode(payload)
-		}
-	} else {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			converter.Decode(payload)
-		}
+	f := NewFastJsonConverter(schema, nil)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		f.Decode(ctx, payload)
+	}
+}
+
+func BenchmarkNativeFloatParse(b *testing.B) {
+	m := make(map[string]interface{})
+	data := `{"id":1.2}`
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		json.Unmarshal([]byte(data), &m)
+	}
+}
+
+func BenchmarkFloatParse(b *testing.B) {
+	ctx := mockContext.NewMockContext("test", "test")
+	f := NewFastJsonConverter(nil, map[string]any{"useInt64ForWholeNumber": true})
+	data := `{"id":1.2}`
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		f.Decode(ctx, []byte(data))
+	}
+}
+
+func BenchmarkIntParse(b *testing.B) {
+	ctx := mockContext.NewMockContext("test", "test")
+	f := NewFastJsonConverter(nil, map[string]any{"useInt64ForWholeNumber": true})
+	data := `{"id":1}`
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		f.Decode(ctx, []byte(data))
 	}
 }

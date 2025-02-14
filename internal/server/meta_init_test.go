@@ -16,7 +16,9 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,10 +27,16 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/meta"
+	"github.com/lf-edge/ekuiper/v2/extensions/impl/sql"
+	"github.com/lf-edge/ekuiper/v2/extensions/impl/sql/client"
+	"github.com/lf-edge/ekuiper/v2/extensions/impl/sql/testx"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/meta"
+	"github.com/lf-edge/ekuiper/v2/pkg/connection"
+	"github.com/lf-edge/ekuiper/v2/pkg/modules"
 )
 
 type MetaTestSuite struct {
@@ -52,6 +60,40 @@ func (suite *MetaTestSuite) SetupTest() {
 	if err := meta.ReadSourceMetaFile(path.Join(confDir, "mqtt_source.json"), true, false); nil != err {
 		fmt.Println(err)
 	}
+}
+
+var (
+	address = "localhost"
+	port    = 33061
+)
+
+func init() {
+	modules.RegisterConnection("sql", client.CreateConnection)
+	modules.RegisterLookupSource("sql", sql.GetLookupSource)
+	modules.RegisterSink("sql", sql.GetSink)
+}
+
+func (suite *MetaTestSuite) TestLookupPing() {
+	connection.InitConnectionManager4Test()
+	s, err := testx.SetupEmbeddedMysqlServer(address, port)
+	require.NoError(suite.T(), err)
+	defer func() {
+		s.Close()
+	}()
+	props := map[string]interface{}{
+		"dburl":      fmt.Sprintf("mysql://root:@%v:%v/test", address, port),
+		"datasource": "t",
+		"table":      "t",
+	}
+	b, _ := json.Marshal(props)
+	req, _ := http.NewRequest(http.MethodPost, "/metadata/lookups/connection/sql", bytes.NewBuffer(b))
+	w := httptest.NewRecorder()
+	suite.r.ServeHTTP(w, req)
+	require.Equal(suite.T(), http.StatusOK, w.Code)
+	req, _ = http.NewRequest(http.MethodPost, "/metadata/sinks/connection/sql", bytes.NewBuffer(b))
+	w = httptest.NewRecorder()
+	suite.r.ServeHTTP(w, req)
+	require.Equal(suite.T(), http.StatusOK, w.Code)
 }
 
 func (suite *MetaTestSuite) TestSinksMetaHandler() {
@@ -160,7 +202,7 @@ func (suite *MetaTestSuite) TestConnectionConfKeyHandler() {
 }
 
 func (suite *MetaTestSuite) TestSinkConfKeyHandler() {
-	req, _ := http.NewRequest(http.MethodPut, "/metadata/sinks/mqtt/confKeys/test", bytes.NewBufferString(`{"qos": 0, "server": "tcp://10.211.55.6:1883"}`))
+	req, _ := http.NewRequest(http.MethodPut, "/metadata/sinks/mqtt/confKeys/test", bytes.NewBufferString(`{"qos": 0, "server": "tcp://10.211.55.6:1883", "password":"123456"}`))
 	DataDir, _ := conf.GetDataLoc()
 	os.MkdirAll(path.Join(DataDir, "sinks"), 0o755)
 	if _, err := os.Create(path.Join(DataDir, "sinks", "mqtt.yaml")); err != nil {
@@ -180,8 +222,8 @@ func (suite *MetaTestSuite) TestResourcesHandler() {
 	assert.Equal(suite.T(), http.StatusOK, w.Code)
 }
 
-func (suite *MetaTestSuite) TestHiddenPassword() {
-	req, _ := http.NewRequest(http.MethodPut, "/metadata/connections/test/confKeys/test", bytes.NewBufferString(`{"password": "123456", "url": "sqlserver://username:password123456@140.210.204.147/testdb"}`))
+func (suite *MetaTestSuite) TestNotHiddenPassword() {
+	req, _ := http.NewRequest(http.MethodPut, "/metadata/connections/test/confKeys/test", bytes.NewBufferString(`{"password": "123456","token":"123456","url": "sqlserver://username:password123456@140.210.204.147/testdb"}`))
 	w := httptest.NewRecorder()
 	DataDir, _ := conf.GetDataLoc()
 	os.MkdirAll(path.Join(DataDir, "connections"), 0o755)
@@ -194,7 +236,7 @@ func (suite *MetaTestSuite) TestHiddenPassword() {
 	w = httptest.NewRecorder()
 	suite.r.ServeHTTP(w, req)
 	assert.Equal(suite.T(), http.StatusOK, w.Code)
-	assert.Equal(suite.T(), bytes.NewBufferString(`{"test":{"password":"******","url":"sqlserver://username:%2A%2A%2A%2A%2A%2A@140.210.204.147/testdb"}}`), w.Body)
+	assert.Equal(suite.T(), bytes.NewBufferString(`{"test":{"password":"123456","token":"123456","url":"sqlserver://username:password123456@140.210.204.147/testdb"}}`), w.Body)
 
 	os.Remove(path.Join(DataDir, "connections", "connection.yaml"))
 	os.Remove(path.Join(DataDir, "connections"))
@@ -202,4 +244,27 @@ func (suite *MetaTestSuite) TestHiddenPassword() {
 
 func TestMetaTestSuite(t *testing.T) {
 	suite.Run(t, new(MetaTestSuite))
+}
+
+func (suite *MetaTestSuite) TestResourceSourceType() {
+	req, _ := http.NewRequest(http.MethodPut, "/metadata/sources/mqtt/confKeys/demo", bytes.NewBufferString(`{"qos": 0, "server": "tcp://10.211.55.6:1883"}`))
+	w := httptest.NewRecorder()
+	DataDir, _ := conf.GetDataLoc()
+	os.MkdirAll(path.Join(DataDir, "sources"), 0o755)
+	_, err := os.Create(path.Join(DataDir, "sources", "mqtt.yaml"))
+	require.NoError(suite.T(), err)
+	suite.r.ServeHTTP(w, req)
+	require.Equal(suite.T(), http.StatusOK, w.Code)
+
+	req, _ = http.NewRequest(http.MethodGet, "/metadata/resource?sourceType=stream", bytes.NewBufferString("any"))
+	suite.r.ServeHTTP(w, req)
+	require.Equal(suite.T(), http.StatusOK, w.Code)
+	returnval, _ := io.ReadAll(w.Body)
+	require.Equal(suite.T(), `{}`, string(returnval))
+
+	req, _ = http.NewRequest(http.MethodGet, "/metadata/resource", bytes.NewBufferString("any"))
+	suite.r.ServeHTTP(w, req)
+	require.Equal(suite.T(), http.StatusOK, w.Code)
+	returnval, _ = io.ReadAll(w.Body)
+	require.Equal(suite.T(), `{"mqtt":{"default":{"insecureSkipVerify":false,"protocolVersion":"3.1.1","qos":1,"server":"tcp://127.0.0.1:1883"},"demo":{"qos":0,"server":"tcp://10.211.55.6:1883"}}}`, string(returnval))
 }

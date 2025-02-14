@@ -1,4 +1,4 @@
-// Copyright 2021-2022 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,11 +14,18 @@
 
 package planner
 
-import "github.com/lf-edge/ekuiper/pkg/ast"
+import "github.com/lf-edge/ekuiper/v2/pkg/ast"
+
+const (
+	DefaultRetainSize = 1
+	MaxRetainSize     = 9999
+)
 
 type JoinAlignPlan struct {
 	baseLogicalPlan
 	Emitters []string
+	// retain size for each table emitter
+	Sizes []int
 }
 
 func (p *JoinAlignPlan) BuildExplainInfo() {

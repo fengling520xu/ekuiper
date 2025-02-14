@@ -20,10 +20,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
 func TestStrFunc_Apply1(t *testing.T) {
@@ -391,6 +391,18 @@ func TestStrFunc_Apply1(t *testing.T) {
 				},
 			},
 			result: []map[string]interface{}{{}},
+		},
+		{
+			sql: "SELECT reverse(a) AS a FROM test",
+			data: &xsql.Tuple{
+				Emitter: "test",
+				Message: xsql.Message{
+					"a": "abc",
+				},
+			},
+			result: []map[string]interface{}{{
+				"a": "cba",
+			}},
 		},
 		{
 			sql: "SELECT rpad(a, 3) AS a FROM test",

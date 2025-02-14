@@ -18,6 +18,7 @@ log/*
 plugins/sources/*
 plugins/sinks/*
 plugins/functions/*
+tools/failpoint/bin
 
 .git/
 .idea/
@@ -40,3 +41,4 @@ corss_build_for_rpm.tar
 
 .vscode/
 tools/lint/bin/
+go.work.sum

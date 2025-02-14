@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,11 +15,14 @@
 package conf
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/pingcap/failpoint"
 )
 
 func init() {
@@ -37,6 +40,7 @@ const (
 	dataDir       = "data"
 	logDir        = "log"
 	pluginsDir    = "plugins"
+	metricsDir    = "metrics"
 	KuiperBaseKey = "KuiperBaseKey"
 )
 
@@ -50,7 +54,12 @@ var (
 	}
 )
 
-func GetConfLoc() (string, error) {
+func GetConfLoc() (s string, err error) {
+	defer func() {
+		failpoint.Inject("GetConfLocErr", func() {
+			err = errors.New("GetConfLocErr")
+		})
+	}()
 	return GetLoc(etcDir)
 }
 
@@ -58,13 +67,30 @@ func GetLogLoc() (string, error) {
 	return GetLoc(logDir)
 }
 
-func GetDataLoc() (string, error) {
+func GetMetricsLoc() (string, error) {
+	logPath, err := GetLogLoc()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(logPath, metricsDir), nil
+}
+
+func GetDataLoc() (s string, err error) {
+	defer func() {
+		failpoint.Inject("GetDataLocErr", func() {
+			err = errors.New("GetDataLocErr")
+		})
+	}()
 	if IsTesting {
 		dataDir, err := GetLoc(dataDir)
 		if err != nil {
 			return "", err
 		}
-		d := path.Join(dataDir, "test")
+		dir := "test"
+		if TestId != "" {
+			dir = TestId
+		}
+		d := path.Join(dataDir, dir)
 		if _, err := os.Stat(d); os.IsNotExist(err) {
 			err = os.MkdirAll(d, 0o755)
 			if err != nil {
@@ -76,7 +102,12 @@ func GetDataLoc() (string, error) {
 	return GetLoc(dataDir)
 }
 
-func GetPluginsLoc() (string, error) {
+func GetPluginsLoc() (s string, err error) {
+	defer func() {
+		failpoint.Inject("GetPluginsLocErr", func() {
+			err = errors.New("GetPluginsLocErr")
+		})
+	}()
 	return GetLoc(pluginsDir)
 }
 
@@ -95,10 +126,12 @@ func absolutePath(loc string) (dir string, err error) {
 
 // GetLoc subdir must be a relative path
 func GetLoc(subdir string) (string, error) {
+	if subdir == "" {
+		return os.Getenv(KuiperBaseKey), nil
+	}
 	if "relative" == PathConfig.LoadFileType {
 		return relativePath(subdir)
 	}
-
 	if "absolute" == PathConfig.LoadFileType {
 		return absolutePath(subdir)
 	}
@@ -140,12 +173,30 @@ func relativePath(subdir string) (dir string, err error) {
 }
 
 func ProcessPath(p string) (string, error) {
-	if abs, err := filepath.Abs(p); err != nil {
-		return "", nil
-	} else {
-		if _, err := os.Stat(abs); os.IsNotExist(err) {
+	abs := p
+	var err error
+	if !filepath.IsAbs(p) {
+		abs, err = GetLoc(p)
+		if err != nil {
 			return "", err
 		}
-		return abs, nil
 	}
+	if _, err := os.Stat(abs); os.IsNotExist(err) {
+		return "", err
+	}
+	return abs, nil
+}
+
+func InitMetricsFolder() error {
+	mPath, err := GetLoc(metricsDir)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(mPath); os.IsNotExist(err) {
+		err := os.Mkdir(mPath, 0o755)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

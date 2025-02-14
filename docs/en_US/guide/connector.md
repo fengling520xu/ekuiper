@@ -36,6 +36,7 @@ For scenarios where custom data sources or specific third-party integrations are
 - [Video Source](./sources/plugin/video.md): A source to query video streams.
 - [Random source](./sources/plugin/random.md): A source to generate random data for testing.
 - [Zero MQ source](./sources/plugin/zmq.md): A source to read data from Zero MQ.
+- [Kafka source](./sources/plugin/kafka.md): A source to read data from Kafka
 
 ## Sink Connectors
 
@@ -63,7 +64,6 @@ For specialized data dispatch requirements or integrations with particular platf
 
 - [InfluxDB sink](./sinks/plugin/influx.md): A sink to InfluxDB `v1.x`.
 - [InfluxDBV2 sink](./sinks/plugin/influx2.md): A sink to InfluxDB `v2.x`.
-- [TDengine sink](./sinks/plugin/tdengine.md): A sink to TDengine.
 - [Image sink](./sinks/plugin/image.md): A sink to an image file. Only used to handle binary results.
 - [Zero MQ sink](./sinks/plugin/zmq.md): A sink to Zero MQ.
 - [Kafka sink](./sinks/plugin/kafka.md): A sink to Kafka.
@@ -71,79 +71,6 @@ For specialized data dispatch requirements or integrations with particular platf
 ### Data Templates in Sink Connectors
 
 [Data templates](./sinks/data_template.md) in eKuiper allow for "secondary processing" of analysis results to cater to the diverse formatting requirements of different sink systems. Utilizing the Golang template system, eKuiper provides mechanisms for dynamic data transformation, conditional outputs, and iterative processing. This ensures compatibility and precise formatting for various sinks.
-
-## Connection Selector
-
-The connector selector is a powerful feature in eKuiper that allows users to define a connection once and reuse it across multiple configurations. It ensures efficient connection management and reduces redundancy.
-
-To define a global connection configuration, use the `connectionSelector` key to name your connection, e.g., `mqtt.localConnection`. Override global configurations with custom configurations but reference the same `connectionSelector`.
-
-For example, consider the configurations `demo_conf` and `demo2_conf`:
-
-```yaml
-#Override the global configurations
-demo_conf: #Conf_key
-  qos: 0
-  connectionSelector: mqtt.localConnection
-  servers: [tcp://10.211.55.6:1883, tcp://127.0.0.1]
-
-#Override the global configurations
-demo2_conf: #Conf_key
-  qos: 0
-  connentionSelector: mqtt.localConnection
-  servers: [tcp://10.211.55.6:1883, tcp://127.0.0.1]
-```
-
-Both configurations reference the same `connectionSelector`, indicating that they utilize the same MQTT connection. When streams `demo` and `demo2` are defined based on these configurations:
-
-```text
-demo (
-    ...
-  ) WITH (DATASOURCE="test/", FORMAT="JSON", CONF_KEY="demo_conf");
-
-demo2 (
-    ...
-  ) WITH (DATASOURCE="test2/", FORMAT="JSON", CONF_KEY="demo2_conf");
-
-```
-
-They inherently share the MQTT connection. Specifically:
-
-- The stream `demo` subscribes to the MQTT topic `test/` with a QoS of 0.
-- The stream `demo2` subscribes to `test2/`, also with a QoS of 0.
-
-::: tip
-
-For MQTT sources, if two streams have the same `DATASOURCE` but differing `qos` values, only the rule started first will trigger a subscription.
-
-:::
-
-**Configuration**
-
-The actual connection profiles, like `mqtt.localConnection`, are usually defined in a separate file, such as `connections/connection.yaml`.
-
-Example
-
-```yaml
-mqtt:
-  localConnection: #connection key
-    server: "tcp://127.0.0.1:1883"
-    username: ekuiper
-    password: password
-    #certificationPath: /var/kuiper/xyz-certificate.pem
-    #privateKeyPath: /var/kuiper/xyz-private.pem.ke
-    #insecureSkipVerify: false
-    #protocolVersion: 3
-    clientid: ekuiper
-  cloudConnection: #connection key
-    server: "tcp://broker.emqx.io:1883"
-    username: user1
-    password: password
-    #certificationPath: /var/kuiper/xyz-certificate.pem
-    #privateKeyPath: /var/kuiper/xyz-private.pem.ke
-    #insecureSkipVerify: false
-    #protocolVersion: 3
-```
 
 ## Batch Configuration
 

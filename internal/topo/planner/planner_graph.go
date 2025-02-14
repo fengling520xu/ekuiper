@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,22 +18,22 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
-	"github.com/lf-edge/ekuiper/internal/binder/function"
-	store2 "github.com/lf-edge/ekuiper/internal/pkg/store"
-	"github.com/lf-edge/ekuiper/internal/topo"
-	"github.com/lf-edge/ekuiper/internal/topo/graph"
-	"github.com/lf-edge/ekuiper/internal/topo/node"
-	"github.com/lf-edge/ekuiper/internal/topo/operator"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/cast"
-	"github.com/lf-edge/ekuiper/pkg/kv"
-	"github.com/lf-edge/ekuiper/pkg/message"
+	"github.com/lf-edge/ekuiper/v2/internal/binder/function"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	store2 "github.com/lf-edge/ekuiper/v2/internal/pkg/store"
+	"github.com/lf-edge/ekuiper/v2/internal/topo"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/graph"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/node"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/operator"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/kv"
 )
 
-type genNodeFunc func(name string, props map[string]interface{}, options *api.RuleOption) (api.TopNode, error)
+type genNodeFunc func(name string, props map[string]interface{}, options *def.RuleOption) (node.TopNode, error)
 
 var extNodes = map[string]genNodeFunc{}
 
@@ -47,7 +47,7 @@ const (
 )
 
 // PlanByGraph returns a topo.Topo object by a graph
-func PlanByGraph(rule *api.Rule) (*topo.Topo, error) {
+func PlanByGraph(rule *def.Rule) (*topo.Topo, error) {
 	ruleGraph := rule.Graph
 	if ruleGraph == nil {
 		return nil, errors.New("no graph")
@@ -57,7 +57,7 @@ func PlanByGraph(rule *api.Rule) (*topo.Topo, error) {
 		return nil, err
 	}
 	var (
-		nodeMap             = make(map[string]api.TopNode)
+		nodeMap             = make(map[string]node.TopNode)
 		sinks               = make(map[string]bool)
 		sources             = make(map[string]bool)
 		store               kv.KeyValue
@@ -74,7 +74,7 @@ func PlanByGraph(rule *api.Rule) (*topo.Topo, error) {
 		if _, ok := ruleGraph.Topo.Edges[srcName]; !ok {
 			return nil, fmt.Errorf("no edge defined for source node %s", srcName)
 		}
-		srcNode, srcType, name, err := parseSource(srcName, gn, rule, store, lookupTableChildren)
+		srcNode, srcType, name, ops, err := parseSource(srcName, gn, rule, tp, store, lookupTableChildren)
 		if err != nil {
 			return nil, fmt.Errorf("parse source %s with %v error: %w", srcName, gn.Props, err)
 		}
@@ -91,9 +91,16 @@ func PlanByGraph(rule *api.Rule) (*topo.Topo, error) {
 		if srcNode != nil {
 			nodeMap[srcName] = srcNode
 			tp.AddSrc(srcNode)
+			inputs := []node.Emitter{srcNode}
+			for _, e := range ops {
+				tp.AddOperator(inputs, e)
+				inputs = []node.Emitter{e}
+				nodeMap[srcName] = e
+			}
 		}
 		sources[srcName] = true
 	}
+	tp.SetStreams(sourceNames)
 	for nodeName, gn := range ruleGraph.Nodes {
 		switch gn.Type {
 		case "source": // handled above,
@@ -102,7 +109,11 @@ func PlanByGraph(rule *api.Rule) (*topo.Topo, error) {
 			if _, ok := ruleGraph.Topo.Edges[nodeName]; ok {
 				return nil, fmt.Errorf("sink %s has edge", nodeName)
 			}
-			nodeMap[nodeName] = node.NewSinkNode(nodeName, gn.NodeType, gn.Props)
+			cn, err := SinkToComp(tp, gn.NodeType, nodeName, gn.Props, rule, len(sourceNames))
+			if err != nil {
+				return nil, err
+			}
+			nodeMap[nodeName] = cn
 			sinks[nodeName] = true
 		case "operator":
 			if _, ok := ruleGraph.Topo.Edges[nodeName]; !ok {
@@ -182,11 +193,11 @@ func PlanByGraph(rule *api.Rule) (*topo.Topo, error) {
 								if !lookupPlan.validateAndExtractCondition() {
 									return nil, fmt.Errorf("parse join %s with %v error: join condition %s is invalid, at least one equi-join predicate is required", nodeName, gn.Props, join.Expr)
 								}
-								op, err := node.NewLookupNode(lookupPlan.joinExpr.Name, lookupPlan.fields, lookupPlan.keys, lookupPlan.joinExpr.JoinType, lookupPlan.valvars, lookupPlan.options, rule.Options)
+								op, err := planLookupSource(tp.GetContext(), &lookupPlan, rule.Options)
 								if err != nil {
 									return nil, fmt.Errorf("parse join %s with %v error: fail to create lookup node", nodeName, gn.Props)
 								}
-								nodeMap[nodeName] = op
+								nodeMap[nodeName] = op.(node.TopNode)
 							} else {
 								joins = append(joins, join)
 							}
@@ -370,11 +381,11 @@ func PlanByGraph(rule *api.Rule) (*topo.Topo, error) {
 		for _, fromNode := range fromNodes {
 			totalLen += len(fromNode)
 		}
-		inputs := make([]api.Emitter, 0, totalLen)
+		inputs := make([]node.Emitter, 0, totalLen)
 		for i, fromNode := range fromNodes {
 			for _, from := range fromNode {
 				if i == 0 {
-					if src, ok := nodeMap[from].(api.Emitter); ok {
+					if src, ok := nodeMap[from].(node.Emitter); ok {
 						inputs = append(inputs, src)
 					}
 				} else {
@@ -392,7 +403,12 @@ func PlanByGraph(rule *api.Rule) (*topo.Topo, error) {
 			return nil, fmt.Errorf("node %s is not defined", nodeName)
 		}
 		if _, ok := sinks[nodeName]; ok {
-			tp.AddSink(inputs, n.(*node.SinkNode))
+			switch nt := n.(type) {
+			case node.CompNode:
+				PlanSinkOps(tp, inputs, nt)
+			default:
+				tp.AddSink(inputs, nt.(*node.SinkNode))
+			}
 		} else {
 			tp.AddOperator(inputs, n.(node.OperatorNode))
 		}
@@ -424,48 +440,48 @@ func genNodesInOrder(toNodes []string, edges map[string][]interface{}, flatRever
 	return i
 }
 
-func parseSource(nodeName string, gn *api.GraphNode, rule *api.Rule, store kv.KeyValue, lookupTableChildren map[string]*ast.Options) (*node.SourceNode, sourceType, string, error) {
-	sourceMeta := &api.SourceMeta{
+func parseSource(nodeName string, gn *def.GraphNode, rule *def.Rule, tp *topo.Topo, store kv.KeyValue, lookupTableChildren map[string]*ast.Options) (node.DataSourceNode, sourceType, string, []node.OperatorNode, error) {
+	sourceMeta := &def.SourceMeta{
 		SourceType: "stream",
 	}
 	err := cast.MapToStruct(gn.Props, sourceMeta)
 	if err != nil {
-		return nil, ILLEGAL, "", err
+		return nil, ILLEGAL, "", nil, err
 	}
 	if sourceMeta.SourceType != "stream" && sourceMeta.SourceType != "table" {
-		return nil, ILLEGAL, "", fmt.Errorf("source type %s not supported", sourceMeta.SourceType)
+		return nil, ILLEGAL, "", nil, fmt.Errorf("source type %s not supported", sourceMeta.SourceType)
 	}
 	// If source name is specified, find the created stream/table from store
 	if sourceMeta.SourceName != "" {
 		if store == nil {
 			store, err = store2.GetKV("stream")
 			if err != nil {
-				return nil, ILLEGAL, "", err
+				return nil, ILLEGAL, "", nil, err
 			}
 		}
 		streamStmt, e := xsql.GetDataSource(store, sourceMeta.SourceName)
 		if e != nil {
-			return nil, ILLEGAL, "", fmt.Errorf("fail to get stream %s, please check if stream is created", sourceMeta.SourceName)
+			return nil, ILLEGAL, "", nil, fmt.Errorf("fail to get stream %s, please check if stream is created", sourceMeta.SourceName)
 		}
 		if streamStmt.StreamType == ast.TypeStream && sourceMeta.SourceType == "table" {
-			return nil, ILLEGAL, "", fmt.Errorf("stream %s is not a table", sourceMeta.SourceName)
+			return nil, ILLEGAL, "", nil, fmt.Errorf("stream %s is not a table", sourceMeta.SourceName)
 		} else if streamStmt.StreamType == ast.TypeTable && sourceMeta.SourceType == "stream" {
-			return nil, ILLEGAL, "", fmt.Errorf("table %s is not a stream", sourceMeta.SourceName)
+			return nil, ILLEGAL, "", nil, fmt.Errorf("table %s is not a stream", sourceMeta.SourceName)
 		}
 		st := streamStmt.Options.TYPE
 		if st == "" {
 			st = "mqtt"
 		}
 		if st != gn.NodeType {
-			return nil, ILLEGAL, "", fmt.Errorf("source type %s does not match the stream type %s", gn.NodeType, st)
+			return nil, ILLEGAL, "", nil, fmt.Errorf("source type %s does not match the stream type %s", gn.NodeType, st)
 		}
 		sInfo, err := convertStreamInfo(streamStmt)
 		if err != nil {
-			return nil, ILLEGAL, "", err
+			return nil, ILLEGAL, "", nil, err
 		}
 		if sInfo.stmt.StreamType == ast.TypeTable && sInfo.stmt.Options.KIND == ast.StreamKindLookup {
 			lookupTableChildren[string(sInfo.stmt.Name)] = sInfo.stmt.Options
-			return nil, LOOKUPTABLE, string(sInfo.stmt.Name), nil
+			return nil, LOOKUPTABLE, string(sInfo.stmt.Name), nil, nil
 		} else {
 			// Use the plan to calculate the schema and other meta info
 			p := DataSourcePlan{
@@ -480,22 +496,22 @@ func parseSource(nodeName string, gn *api.GraphNode, rule *api.Rule, store kv.Ke
 			if sInfo.stmt.StreamType == ast.TypeStream {
 				err = p.PruneColumns(nil)
 				if err != nil {
-					return nil, ILLEGAL, "", err
+					return nil, ILLEGAL, "", nil, err
 				}
-				srcNode, e := transformSourceNode(p, nil, rule.Options)
+				srcNode, ops, _, e := transformSourceNode(tp.GetContext(), p, nil, rule.Id, rule.Options, 1)
 				if e != nil {
-					return nil, ILLEGAL, "", e
+					return nil, ILLEGAL, "", nil, e
 				}
-				return srcNode, STREAM, string(sInfo.stmt.Name), nil
+				return srcNode, STREAM, string(sInfo.stmt.Name), ops, nil
 			} else {
-				return nil, SCANTABLE, string(sInfo.stmt.Name), nil
+				return nil, SCANTABLE, string(sInfo.stmt.Name), nil, nil
 			}
 		}
 	} else {
 		sourceOption := &ast.Options{}
 		err = cast.MapToStruct(gn.Props, sourceOption)
 		if err != nil {
-			return nil, ILLEGAL, "", err
+			return nil, ILLEGAL, "", nil, err
 		}
 		sourceOption.TYPE = gn.NodeType
 		if sourceOption.SCHEMAID == "" && gn.Props["schemaName"] != nil && gn.Props["schemaMessage"] != nil {
@@ -505,19 +521,26 @@ func parseSource(nodeName string, gn *api.GraphNode, rule *api.Rule, store kv.Ke
 				sourceOption.SCHEMAID = schemaName + "." + schemaMessage
 			}
 		}
-		switch sourceMeta.SourceType {
-		case "stream":
-			pp, err := operator.NewPreprocessor(true, nil, true, nil, rule.Options.IsEventTime, sourceOption.TIMESTAMP, sourceOption.TIMESTAMP_FORMAT, strings.EqualFold(sourceOption.FORMAT, message.FormatBinary), sourceOption.STRICT_VALIDATION)
-			if err != nil {
-				return nil, ILLEGAL, "", err
-			}
-			srcNode := node.NewSourceNode(nodeName, ast.TypeStream, pp, sourceOption, rule.Options.SendError, nil)
-			return srcNode, STREAM, nodeName, nil
-		case "table":
-			return nil, ILLEGAL, "", fmt.Errorf("anonymouse table source is not supported, please create it prior to the rule")
+		p := DataSourcePlan{
+			name: ast.StreamName(nodeName),
+			streamStmt: &ast.StreamStmt{
+				Name:         ast.StreamName(nodeName),
+				StreamFields: nil,
+				Options:      sourceOption,
+			},
+			streamFields:    nil,
+			isSchemaless:    true,
+			iet:             rule.Options.IsEventTime,
+			allMeta:         rule.Options.SendMetaToSink,
+			timestampField:  sourceOption.TIMESTAMP,
+			timestampFormat: sourceOption.TIMESTAMP_FORMAT,
+		}.Init()
+		srcNode, ops, _, e := transformSourceNode(tp.GetContext(), p, nil, rule.Id, rule.Options, 1)
+		if e != nil {
+			return nil, ILLEGAL, "", nil, e
 		}
+		return srcNode, STREAM, nodeName, ops, nil
 	}
-	return nil, ILLEGAL, "", errors.New("invalid source node")
 }
 
 func parseOrderBy(props map[string]interface{}, sourceNames []string) (*operator.OrderOp, error) {
@@ -602,10 +625,12 @@ func parseWindow(props map[string]interface{}) (*node.WindowConfig, error) {
 		return nil, fmt.Errorf("window size %d is invalid", n.Size)
 	}
 	var (
-		wt          ast.WindowType
-		length      int
-		interval    int
-		rawInterval int
+		wt            ast.WindowType
+		length        time.Duration
+		interval      time.Duration
+		countLength   int
+		countInterval int
+		rawInterval   int
 	)
 	switch strings.ToLower(n.Type) {
 	case "tumblingwindow":
@@ -650,38 +675,40 @@ func parseWindow(props map[string]interface{}) (*node.WindowConfig, error) {
 	}
 	var timeUnit ast.Token
 	if wt == ast.COUNT_WINDOW {
-		length = n.Size
-		interval = n.Interval
+		countLength = n.Size
+		countInterval = n.Interval
 	} else {
-		unit := 1
+		var unit time.Duration
 		switch strings.ToLower(n.Unit) {
 		case "dd":
-			unit = 24 * 3600 * 1000
+			unit = 24 * time.Hour
 			timeUnit = ast.DD
 		case "hh":
-			unit = 3600 * 1000
+			unit = time.Hour
 			timeUnit = ast.HH
 		case "mi":
-			unit = 60 * 1000
+			unit = time.Minute
 			timeUnit = ast.MI
 		case "ss":
-			unit = 1000
+			unit = time.Second
 			timeUnit = ast.SS
 		case "ms":
-			unit = 1
+			unit = time.Millisecond
 			timeUnit = ast.MS
 		default:
 			return nil, fmt.Errorf("Invalid unit %s", n.Unit)
 		}
-		length = n.Size * unit
-		interval = n.Interval * unit
+		length = time.Duration(n.Size) * unit
+		interval = time.Duration(n.Interval) * unit
 	}
 	return &node.WindowConfig{
-		RawInterval: rawInterval,
-		Type:        wt,
-		Length:      int64(length),
-		Interval:    int64(interval),
-		TimeUnit:    timeUnit,
+		RawInterval:   rawInterval,
+		Type:          wt,
+		Length:        length,
+		Interval:      interval,
+		CountLength:   countLength,
+		CountInterval: countInterval,
+		TimeUnit:      timeUnit,
 	}, nil
 }
 
@@ -697,9 +724,9 @@ func parsePick(props map[string]interface{}, sourceNames []string) (*operator.Pr
 	}
 	t := ProjectPlan{
 		fields:      stmt.Fields,
-		isAggregate: xsql.WithAggFields(stmt),
+		isAggregate: n.IsAgg,
 	}.Init()
-	return &operator.ProjectOp{ColNames: t.colNames, AliasNames: t.aliasNames, AliasFields: t.aliasFields, ExprFields: t.exprFields, ExceptNames: t.exceptNames, IsAggregate: t.isAggregate, AllWildcard: t.allWildcard, WildcardEmitters: t.wildcardEmitters, ExprNames: t.exprNames, SendMeta: t.sendMeta}, nil
+	return &operator.ProjectOp{ColNames: t.colNames, AliasNames: t.aliasNames, AliasFields: t.aliasFields, ExprFields: t.exprFields, ExceptNames: t.exceptNames, IsAggregate: t.isAggregate, AllWildcard: t.allWildcard, WildcardEmitters: t.wildcardEmitters, ExprNames: t.exprNames, SendMeta: t.sendMeta, SendNil: t.sendNil}, nil
 }
 
 func parseFunc(props map[string]interface{}, sourceNames []string) (*operator.FuncOp, error) {
@@ -764,7 +791,7 @@ func parseHaving(props map[string]interface{}, sourceNames []string) (*operator.
 		return nil, err
 	} else {
 		if exp != nil {
-			return &operator.HavingOp{Condition: exp}, nil
+			return (&operator.HavingOp{Condition: exp}), nil
 		}
 	}
 	return nil, fmt.Errorf("expr %v is not a condition", m)

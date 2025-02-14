@@ -15,14 +15,15 @@
 package planner
 
 import (
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
 )
 
 type HavingPlan struct {
 	baseLogicalPlan
 	condition  ast.Expr
 	stateFuncs []*ast.Call
+	IsIncAgg   bool
 }
 
 func (p *HavingPlan) BuildExplainInfo() {

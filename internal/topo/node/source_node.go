@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,212 +16,317 @@ package node
 
 import (
 	"fmt"
-	"sync"
+	"time"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/converter"
-	"github.com/lf-edge/ekuiper/internal/topo/context"
-	nodeConf "github.com/lf-edge/ekuiper/internal/topo/node/conf"
-	"github.com/lf-edge/ekuiper/internal/topo/node/metric"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/cast"
-	"github.com/lf-edge/ekuiper/pkg/infra"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/lf-edge/ekuiper/v2/internal/io/memory/pubsub"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/sig"
+	topoContext "github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/node/tracenode"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/infra"
+	"github.com/lf-edge/ekuiper/v2/pkg/model"
+	"github.com/lf-edge/ekuiper/v2/pkg/timex"
 )
 
+// SourceNode is a node that connects to an external source
+// The SourceNode is an all-in-one source node that support connect and decode and more.
+// The SourceConnectorNode is a node that only connects to external source and does not decode.
 type SourceNode struct {
 	*defaultNode
-	streamType   ast.StreamType
-	sourceType   string
-	options      *ast.Options
-	bufferLength int
-	props        map[string]interface{}
-	mutex        sync.RWMutex
-	sources      []api.Source
-	preprocessOp UnOperation
-	schema       map[string]*ast.JsonStreamField
+
+	s         api.Source
+	interval  time.Duration
+	notifySub bool
 }
 
-func NewSourceNode(name string, st ast.StreamType, op UnOperation, options *ast.Options, sendError bool, schema map[string]*ast.JsonStreamField) *SourceNode {
-	t := options.TYPE
-	if t == "" {
-		if st == ast.TypeStream {
-			t = "mqtt"
-		} else if st == ast.TypeTable {
-			t = "file"
+type sourceConf struct {
+	Interval cast.DurationConf `json:"interval"`
+}
+
+// NewSourceNode creates a SourceConnectorNode
+func NewSourceNode(ctx api.StreamContext, name string, ss api.Source, props map[string]any, rOpt *def.RuleOption) (*SourceNode, error) {
+	err := ss.Provision(ctx, props)
+	if err != nil {
+		return nil, err
+	}
+	ctx.GetLogger().Infof("provision source %s with props %+v", name, props)
+	if sit, ok := ss.(model.InfoNode); ok {
+		ss = sit.TransformType()
+	}
+	cc := &sourceConf{}
+	err = cast.MapToStruct(props, cc)
+	if err != nil {
+		return nil, err
+	}
+	m := &SourceNode{
+		defaultNode: newDefaultNode(name, rOpt),
+		s:           ss,
+		interval:    time.Duration(cc.Interval),
+		notifySub:   rOpt.NotifySub,
+	}
+	switch st := ss.(type) {
+	case api.Bounded:
+		st.SetEofIngest(m.ingestEof)
+	}
+	return m, nil
+}
+
+// Open will be invoked by topo. It starts reading data.
+func (m *SourceNode) Open(ctx api.StreamContext, ctrlCh chan<- error) {
+	m.prepareExec(ctx, ctrlCh, "source")
+	go m.Run(ctx, ctrlCh)
+}
+
+func (m *SourceNode) ingestBytes(ctx api.StreamContext, data []byte, meta map[string]any, ts time.Time) {
+	ctx.GetLogger().Debugf("source connector %s receive data %+v", m.name, data)
+	m.onProcessStart(ctx, nil)
+	if meta == nil {
+		meta = make(map[string]any)
+	}
+	tuple := &xsql.RawTuple{Emitter: m.name, Rawdata: data, Timestamp: ts, Metadata: meta}
+	m.traceStart(ctx, meta, tuple)
+	m.Broadcast(tuple)
+	m.onSend(ctx, tuple)
+	m.onProcessEnd(ctx)
+	_ = m.updateState(ctx)
+}
+
+func (m *SourceNode) traceStart(ctx api.StreamContext, meta map[string]any, tuple xsql.HasTracerCtx) {
+	if !ctx.IsTraceEnabled() {
+		return
+	}
+	var (
+		traced   bool
+		traceCtx api.StreamContext
+		span     trace.Span
+	)
+	setType := false
+	opts := make([]trace.SpanStartOption, 0)
+	rawKind, ok := meta["sourceKind"]
+	if ok {
+		kind, ok := rawKind.(string)
+		if ok && kind == "neuron" {
+			opts = append(opts, trace.WithAttributes(attribute.String("span.mytype", "data-collection")))
+			setType = true
 		}
 	}
-	return &SourceNode{
-		streamType: st,
-		sourceType: t,
-		defaultNode: &defaultNode{
-			name:        name,
-			outputs:     make(map[string]chan<- interface{}),
-			concurrency: 1,
-			sendError:   sendError,
-		},
-		preprocessOp: op,
-		options:      options,
-		schema:       schema,
+	if !setType {
+		opts = append(opts, trace.WithAttributes(attribute.String("span.mytype", "data-processing")))
+	}
+	// If read from parent trace
+	if tid, ok := meta["traceId"]; ok {
+		traced, traceCtx, span = tracenode.StartTraceByID(ctx, tid.(string), opts...)
+	} else {
+		strategy := tracenode.ExtractStrategy(ctx)
+		if strategy != topoContext.AlwaysTraceStrategy {
+			return
+		}
+		traced, traceCtx, span = tracenode.StartTraceBackground(ctx, ctx.GetOpId(), opts...)
+		meta["traceId"] = span.SpanContext().TraceID()
+	}
+	if traced {
+		tracenode.RecordRowOrCollection(tuple, span)
+		m.span = span
+		m.spanCtx = traceCtx
 	}
 }
 
-const OffsetKey = "$$offset"
+func (m *SourceNode) ingestAnyTuple(ctx api.StreamContext, data any, meta map[string]any, ts time.Time) {
+	ctx.GetLogger().Debugf("source connector %s receive data %+v", m.name, data)
+	m.onProcessStart(ctx, nil)
+	if meta == nil {
+		meta = make(map[string]any)
+	}
+	switch mess := data.(type) {
+	// Maps are expected from user extension
+	case map[string]any:
+		m.ingestMap(mess, meta, ts)
+	case xsql.Message:
+		m.ingestMap(mess, meta, ts)
+	case []map[string]any:
+		for _, mm := range mess {
+			m.ingestMap(mm, meta, ts)
+		}
+	// expected from file which send out any tuple type
+	case []byte:
+		tuple := &xsql.RawTuple{Emitter: m.name, Rawdata: mess, Timestamp: ts, Metadata: meta}
+		m.traceStart(ctx, meta, tuple)
+		m.Broadcast(tuple)
+		m.onSend(ctx, tuple)
+	// Source tuples are expected from memory
+	case *xsql.Tuple:
+		m.ingestTuple(mess, ts)
+	case []*xsql.Tuple:
+		for _, mm := range mess {
+			m.ingestTuple(mm, ts)
+		}
+	case []pubsub.MemTuple:
+		for _, mm := range mess {
+			m.ingestTuple(mm.(*xsql.Tuple), ts)
+		}
+	default:
+		// should never happen
+		panic(fmt.Sprintf("receive wrong data %v", data))
+	}
+	m.onProcessEnd(ctx)
+	_ = m.updateState(ctx)
+}
 
-func (m *SourceNode) Open(ctx api.StreamContext, errCh chan<- error) {
-	m.ctx = ctx
-	logger := ctx.GetLogger()
-	logger.Infof("open source node %s with option %v", m.name, m.options)
-	go func() {
-		panicOrError := infra.SafeRun(func() error {
-			props := nodeConf.GetSourceConf(m.sourceType, m.options)
-			m.props = props
-			if c, ok := props["concurrency"]; ok {
-				if t, err := cast.ToInt(c, cast.STRICT); err != nil || t <= 0 {
-					logger.Warnf("invalid type for concurrency property, should be positive integer but found %t", c)
-				} else {
-					m.concurrency = t
-				}
-			}
-			bl := 102400
-			if c, ok := props["bufferLength"]; ok {
-				if t, err := cast.ToInt(c, cast.STRICT); err != nil || t <= 0 {
-					logger.Warnf("invalid type for bufferLength property, should be positive integer but found %t", c)
-				} else {
-					bl = t
-				}
-			}
-			m.bufferLength = bl
-			if m.streamType == ast.TypeTable {
-				props["isTable"] = true
-			}
-			props["delimiter"] = m.options.DELIMITER
-			m.options.Schema = nil
-			if m.schema != nil {
-				m.options.Schema = m.schema
-			}
-			converterTool, err := converter.GetOrCreateConverter(m.options)
+func (m *SourceNode) connectionStatusChange(status string, message string) {
+	// TODO only send out error when status change from connected?
+	m.ctx.GetLogger().Debugf("receive status %s message %s", status, message)
+	if status == api.ConnectionDisconnected {
+		m.ingestError(m.ctx, fmt.Errorf("disconnected: %s", message))
+	}
+	m.statManager.SetConnectionState(status, message)
+}
+
+func (m *SourceNode) ingestMap(t map[string]any, meta map[string]any, ts time.Time) {
+	tuple := &xsql.Tuple{Emitter: m.name, Message: t, Timestamp: ts, Metadata: meta}
+	m.traceStart(m.ctx, meta, tuple)
+	m.Broadcast(tuple)
+	m.onSend(m.ctx, tuple)
+}
+
+func (m *SourceNode) ingestTuple(t *xsql.Tuple, ts time.Time) {
+	tuple := &xsql.Tuple{Emitter: m.name, Message: t.Message, Timestamp: ts, Metadata: t.Metadata, Ctx: t.Ctx}
+	// If receiving tuple, its source is still in the system. So continue tracing
+	traced, spanCtx, span := tracenode.TraceInput(m.ctx, tuple, m.name)
+	if traced {
+		tracenode.RecordRowOrCollection(tuple, span)
+		m.span = span
+		m.spanCtx = spanCtx
+	}
+	m.Broadcast(tuple)
+	m.onSend(m.ctx, tuple)
+}
+
+func (m *SourceNode) ingestError(ctx api.StreamContext, err error) {
+	m.onError(ctx, err)
+}
+
+func (m *SourceNode) ingestEof(ctx api.StreamContext) {
+	ctx.GetLogger().Infof("send out EOF")
+	m.Broadcast(xsql.EOFTuple(0))
+}
+
+// GetSource only used for test
+func (m *SourceNode) GetSource() api.Source {
+	return m.s
+}
+
+const (
+	OffsetKey = "$$offset"
+)
+
+func (m *SourceNode) Rewind(ctx api.StreamContext) error {
+	s := m.s
+	if rw, ok := s.(api.Rewindable); ok {
+		if offset, err := ctx.GetState(OffsetKey); err != nil {
+			return err
+		} else if offset != nil {
+			ctx.GetLogger().Infof("Source rewind from %v", offset)
+			err = rw.Rewind(offset)
 			if err != nil {
-				msg := fmt.Sprintf("cannot get converter from format %s, schemaId %s: %v", m.options.FORMAT, m.options.SCHEMAID, err)
-				logger.Warnf(msg)
-				return fmt.Errorf(msg)
+				return err
 			}
-			ctx = context.WithValue(ctx.(*context.DefaultContext), context.DecodeKey, converterTool)
-			m.reset()
-			logger.Infof("open source node with props %v, concurrency: %d, bufferLength: %d", conf.Printable(m.props), m.concurrency, m.bufferLength)
-			for i := 0; i < m.concurrency; i++ { // workers
-				go func(instance int) {
-					poe := infra.SafeRun(func() error {
-						// Do open source instances
-						var (
-							si     *sourceInstance
-							buffer *DynamicChannelBuffer
-							err    error
-						)
+		}
+	}
+	return nil
+}
 
-						stats, err := metric.NewStatManager(ctx, "source")
-						if err != nil {
-							return err
-						}
-						m.mutex.Lock()
-						m.statManagers = append(m.statManagers, stats)
-						m.mutex.Unlock()
+func (m *SourceNode) updateState(ctx api.StreamContext) error {
+	s := m.s
+	if rw, ok := s.(api.Rewindable); ok {
+		state, err := rw.GetOffset()
+		if err != nil {
+			return err
+		}
+		return ctx.PutState(OffsetKey, state)
+	}
+	return nil
+}
 
-						si, err = getSourceInstance(m, instance)
-						if err != nil {
-							return err
-						}
-						m.mutex.Lock()
-						m.sources = append(m.sources, si.source)
-						m.mutex.Unlock()
-						buffer = si.dataCh
-
-						defer func() {
-							logger.Infof("source %s done", m.name)
-							m.close()
-							buffer.Close()
-						}()
-						logger.Infof("Start source %s instance %d successfully", m.name, instance)
-						for {
-							select {
-							case <-ctx.Done():
-								// We should clear the schema after we close the topo in order to avoid the following problem:
-								// 1. stop the rule
-								// 2. change the schema
-								// 3. restart the rule
-								// As the schema has changed, it will be error if we hold the old schema here
-								// TODO: fetch the latest stream schema after we open the topo
-								m.schema = nil
-								return nil
-							case err := <-si.errorCh:
-								return err
-							case data := <-buffer.Out:
-								if t, ok := data.(*xsql.ErrorSourceTuple); ok {
-									logger.Errorf("Source %s error: %v", ctx.GetOpId(), t.Error)
-									stats.IncTotalExceptions(t.Error.Error())
-									continue
-								}
-								stats.IncTotalRecordsIn()
-								rcvTime := conf.GetNow()
-								if !data.Timestamp().IsZero() {
-									rcvTime = data.Timestamp()
-								}
-								stats.SetProcessTimeStart(rcvTime)
-								tuple := &xsql.Tuple{Emitter: m.name, Message: data.Message(), Timestamp: rcvTime.UnixMilli(), Metadata: data.Meta()}
-								var processedData interface{}
-								if m.preprocessOp != nil {
-									processedData = m.preprocessOp.Apply(ctx, tuple, nil, nil)
-								} else {
-									processedData = tuple
-								}
-								stats.ProcessTimeEnd()
-								// blocking
-								switch val := processedData.(type) {
-								case nil:
-									continue
-								case error:
-									logger.Errorf("Source %s preprocess error: %s", ctx.GetOpId(), val)
-									_ = m.Broadcast(val)
-									stats.IncTotalExceptions(val.Error())
-								default:
-									_ = m.Broadcast(val)
-									stats.IncTotalRecordsOut()
-								}
-								stats.SetBufferLength(int64(buffer.GetLength()))
-								if rw, ok := si.source.(api.Rewindable); ok {
-									if offset, err := rw.GetOffset(); err != nil {
-										infra.DrainError(ctx, err, errCh)
-									} else {
-										err = ctx.PutState(OffsetKey, offset)
-										if err != nil {
-											return err
-										}
-										logger.Debugf("Source save offset %v", offset)
-									}
-								}
-							}
-						}
-					})
-					if poe != nil {
-						infra.DrainError(ctx, poe, errCh)
-					}
-				}(i)
-			}
-			return nil
-		})
-		if panicOrError != nil {
-			infra.DrainError(ctx, panicOrError, errCh)
+// Run Subscribe could be a long-running function
+func (m *SourceNode) Run(ctx api.StreamContext, ctrlCh chan<- error) {
+	defer func() {
+		m.s.Close(ctx)
+		m.Close()
+		if m.notifySub {
+			sig.Ctrl.Rem(m.name)
 		}
 	}()
-}
-
-func (m *SourceNode) reset() {
-	m.statManagers = nil
-}
-
-func (m *SourceNode) close() {
-	if m.options.SHARED {
-		removeSourceInstance(m)
+	poe := infra.SafeRun(func() error {
+		// Blocking and wait for connection. The connect will call the dial and retry if fails
+		err := m.s.Connect(ctx, m.connectionStatusChange)
+		if err != nil {
+			return err
+		}
+		if err := m.Rewind(ctx); err != nil {
+			return err
+		}
+		switch ss := m.s.(type) {
+		case api.BytesSource:
+			err = ss.Subscribe(ctx, m.ingestBytes, m.ingestError)
+		case api.TupleSource:
+			err = ss.Subscribe(ctx, m.ingestAnyTuple, m.ingestError)
+		case api.PullBytesSource, api.PullTupleSource:
+			err = m.runPull(ctx)
+		}
+		if err != nil {
+			return err
+		}
+		if m.notifySub {
+			sig.Ctrl.Add(m.name)
+		}
+		return nil
+	})
+	if poe != nil {
+		infra.DrainError(ctx, poe, ctrlCh)
 	}
+	<-ctx.Done()
+}
+
+func (m *SourceNode) runPull(ctx api.StreamContext) error {
+	err := m.doPull(ctx, timex.GetNow())
+	if err != nil {
+		return err
+	}
+	if m.interval > 0 {
+		ticker := timex.GetTicker(m.interval)
+		go func() {
+			defer ticker.Stop()
+			for {
+				select {
+				case tc := <-ticker.C:
+					ctx.GetLogger().Debugf("source pull at %v", tc.UnixMilli())
+					e := m.doPull(ctx, tc)
+					if e != nil {
+						m.ingestError(ctx, e)
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	return nil
+}
+
+func (m *SourceNode) doPull(ctx api.StreamContext, tc time.Time) error {
+	return infra.SafeRun(func() error {
+		switch ss := m.s.(type) {
+		case api.PullBytesSource:
+			ss.Pull(ctx, tc, m.ingestBytes, m.ingestError)
+		case api.PullTupleSource:
+			ss.Pull(ctx, tc, m.ingestAnyTuple, m.ingestError)
+		}
+		return nil
+	})
 }

@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,11 +19,12 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/lf-edge/ekuiper/internal/binder/function"
-	"github.com/lf-edge/ekuiper/internal/schema"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/kv"
+	"github.com/lf-edge/ekuiper/v2/internal/binder/function"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/schema"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/kv"
 )
 
 type streamInfo struct {
@@ -33,7 +34,7 @@ type streamInfo struct {
 
 // Analyze the select statement by decorating the info from stream statement.
 // Typically, set the correct stream name for fieldRefs
-func decorateStmt(s *ast.SelectStatement, store kv.KeyValue) ([]*streamInfo, []*ast.Call, []*ast.Call, error) {
+func decorateStmt(s *ast.SelectStatement, store kv.KeyValue, opt *def.RuleOption) ([]*streamInfo, []*ast.Call, []*ast.Call, error) {
 	streamsFromStmt := xsql.GetStreams(s)
 	streamStmts := make([]*streamInfo, len(streamsFromStmt))
 	isSchemaless := false
@@ -54,7 +55,7 @@ func decorateStmt(s *ast.SelectStatement, store kv.KeyValue) ([]*streamInfo, []*
 	if checkAliasReferenceCycle(s) {
 		return nil, nil, nil, fmt.Errorf("select fields have cycled alias")
 	}
-	if !isSchemaless {
+	if !isSchemaless && opt.PlanOptimizeStrategy.IsAliasRefCalEnable() {
 		if err := aliasFieldTopoSort(s, streamStmts); err != nil {
 			return nil, nil, nil, err
 		}
@@ -120,21 +121,22 @@ func decorateStmt(s *ast.SelectStatement, store kv.KeyValue) ([]*streamInfo, []*
 				AliasRef:   ar,
 			}
 			walkErr = fieldsMap.save(f.AName, ast.AliasStream, ar)
-			for _, subF := range s.Fields {
-				if f.AName == subF.AName {
-					continue
-				}
-				ast.WalkFunc(&subF, func(node ast.Node) bool {
-					switch fr := node.(type) {
-					case *ast.FieldRef:
-						if fr.Name == f.AName && fr.StreamName == streamName {
-							fr.StreamName = ast.AliasStream
-							fr.AliasRef = ar
-						}
-						return false
+			if opt.PlanOptimizeStrategy.IsAliasRefCalEnable() {
+				for _, subF := range s.Fields {
+					if f.AName == subF.AName {
+						continue
 					}
-					return true
-				})
+					ast.WalkFunc(&subF, func(node ast.Node) bool {
+						switch fr := node.(type) {
+						case *ast.FieldRef:
+							if fr.Name == f.AName && fr.StreamName == streamName {
+								fr.StreamName = ast.AliasStream
+								fr.AliasRef = ar
+							}
+						}
+						return true
+					})
+				}
 			}
 		}
 	}
@@ -175,7 +177,7 @@ func decorateStmt(s *ast.SelectStatement, store kv.KeyValue) ([]*streamInfo, []*
 			if function.IsAnalyticFunc(f.Name) {
 				f.CachedField = fmt.Sprintf("%s_%s_%d", function.AnalyticPrefix, f.Name, f.FuncId)
 				f.Cached = true
-				analyticFuncs = append(analyticFuncs, &ast.Call{
+				analyticFuncs = append([]*ast.Call{{
 					Name:        f.Name,
 					FuncId:      f.FuncId,
 					FuncType:    f.FuncType,
@@ -183,7 +185,7 @@ func decorateStmt(s *ast.SelectStatement, store kv.KeyValue) ([]*streamInfo, []*
 					CachedField: f.CachedField,
 					Partition:   f.Partition,
 					WhenExpr:    f.WhenExpr,
-				})
+				}}, analyticFuncs...)
 			}
 		}
 		return true
@@ -398,18 +400,38 @@ func isAliasFieldTopoSortFinish(aliasDegrees map[string]*aliasTopoDegree) bool {
 	return true
 }
 
-func validate(s *ast.SelectStatement) (err error) {
+type validateOptStmt interface {
+	validate(statement *ast.SelectStatement) error
+}
+
+func validate(stmt *ast.SelectStatement) error {
+	for _, checker := range stmtCheckers {
+		if err := checker.validate(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var stmtCheckers = []validateOptStmt{
+	&aggFuncChecker{},
+	&groupChecker{},
+}
+
+type aggFuncChecker struct{}
+
+func (c *aggFuncChecker) validate(s *ast.SelectStatement) (err error) {
 	isAggStmt := false
 	if xsql.IsAggregate(s.Condition) {
-		return fmt.Errorf("Not allowed to call aggregate functions in WHERE clause.")
+		return fmt.Errorf("Not allowed to call aggregate functions in WHERE clause: %s.", s.Condition)
 	}
 	if !allAggregate(s.Having) {
-		return fmt.Errorf("Not allowed to call non-aggregate functions in HAVING clause.")
+		return fmt.Errorf("Not allowed to call non-aggregate functions in HAVING clause: %s.", s.Having)
 	}
 	for _, d := range s.Dimensions {
 		isAggStmt = true
 		if xsql.IsAggregate(d.Expr) {
-			return fmt.Errorf("Not allowed to call aggregate functions in GROUP BY clause.")
+			return fmt.Errorf("Not allowed to call aggregate functions in GROUP BY clause: %s.", d.Expr)
 		}
 	}
 	if s.Joins != nil {
@@ -440,6 +462,15 @@ func validate(s *ast.SelectStatement) (err error) {
 		return true
 	})
 	return
+}
+
+type groupChecker struct{}
+
+func (c *groupChecker) validate(s *ast.SelectStatement) error {
+	if len(s.Dimensions.GetGroups()) > 0 && s.Dimensions.GetWindow() == nil {
+		return fmt.Errorf("select stmt group by should be used with window")
+	}
+	return nil
 }
 
 // file-private functions below

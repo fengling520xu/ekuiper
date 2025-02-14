@@ -14,10 +14,13 @@
 
 package pubsub
 
-import "github.com/lf-edge/ekuiper/pkg/api"
-
 type UpdatableTuple struct {
-	*api.DefaultSourceTuple
+	MemTuple
 	Rowkind string
 	Keyval  interface{}
+}
+
+type MemTuple interface {
+	Value(key, table string) (any, bool)
+	ToMap() map[string]any
 }

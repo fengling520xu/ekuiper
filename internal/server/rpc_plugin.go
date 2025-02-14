@@ -1,4 +1,4 @@
-// Copyright 2022 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,9 +20,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/lf-edge/ekuiper/internal/pkg/model"
-	"github.com/lf-edge/ekuiper/internal/plugin"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/model"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
 func (t *Server) CreatePlugin(arg *model.PluginDesc, reply *string) error {
@@ -36,9 +36,6 @@ func (t *Server) CreatePlugin(arg *model.PluginDesc, reply *string) error {
 	}
 	// define according to the build tag
 	err = t.doRegister(pt, p)
-	if err != nil {
-		return err
-	}
 	if err != nil {
 		return fmt.Errorf("Create plugin error: %s", err)
 	} else {

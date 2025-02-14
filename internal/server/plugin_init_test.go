@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/lf-edge/ekuiper/internal/plugin"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin"
 )
 
 type PluginTestSuite struct {
@@ -136,6 +136,30 @@ func (suite *PluginTestSuite) TestFunctionsUpdateHandler() {
 	w = httptest.NewRecorder()
 	suite.r.ServeHTTP(w, req)
 	assert.Equal(suite.T(), http.StatusCreated, w.Code)
+
+	// Test function register
+	req, _ = http.NewRequest(http.MethodPost, "/plugins/functions/echo2/register", bytes.NewBufferString("{\"functions\":[\"echo2\"]}"))
+	w = httptest.NewRecorder()
+	suite.r.ServeHTTP(w, req)
+	assert.Equal(suite.T(), http.StatusOK, w.Code)
+
+	// Test function register error: no func
+	req, _ = http.NewRequest(http.MethodPost, "/plugins/functions/none/register", bytes.NewBufferString("{\"functions\":[\"echo2\"]}"))
+	w = httptest.NewRecorder()
+	suite.r.ServeHTTP(w, req)
+	assert.Equal(suite.T(), http.StatusNotFound, w.Code)
+
+	// Test function register error: wrong json
+	req, _ = http.NewRequest(http.MethodPost, "/plugins/functions/echo2/register", bytes.NewBufferString("{\"functions\":\"echo2\"}"))
+	w = httptest.NewRecorder()
+	suite.r.ServeHTTP(w, req)
+	assert.Equal(suite.T(), http.StatusBadRequest, w.Code)
+
+	// Test function register error: wrong register because of empty
+	req, _ = http.NewRequest(http.MethodPost, "/plugins/functions/echo2/register", bytes.NewBufferString("{\"functions\":[]}"))
+	w = httptest.NewRecorder()
+	suite.r.ServeHTTP(w, req)
+	assert.Equal(suite.T(), http.StatusBadRequest, w.Code)
 
 	// Test plugin create problem
 	req, _ = http.NewRequest(http.MethodPut, "/plugins/functions/echo2", bytes.NewBufferString("{\"name\":\"echo2\", \"file\": \""+endpoint+"/functions/echo22.zip\"}"))

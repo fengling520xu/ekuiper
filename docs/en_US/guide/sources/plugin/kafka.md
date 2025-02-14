@@ -1,5 +1,7 @@
 # Kafka Source
 
+<span style="background:green;color:white;padding:1px;margin:2px">stream source</span>
+
 The source will query the Kafka periodically to get data stream.
 
 ## Default build command
@@ -22,8 +24,9 @@ default:
   groupID: ""
   partition: 0
   maxBytes: 1000000
-  offset: 0
 ```
+
+You can check the connectivity of the corresponding sink endpoint in advance through the API: [Connectivity Check](../../../api/restapi/connection.md#connectivity-check)
 
 ### Global configurations
 
@@ -44,7 +47,3 @@ The partition specified when eKuiper consumes kafka messages
 ### maxBytes
 
 The maximum number of bytes that a single Kafka message batch can carry, the default is 1MB
-
-### offset
-
-The offset specified when eKuiper starts consuming messages from kafka, -1 represents lastOffset, and -2 represents firstOffset.

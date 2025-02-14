@@ -1,5 +1,7 @@
 # Kafka 源
 
+<span style="background:green;color:white;padding:1px;margin:2px">stream source</span>
+
 源将订阅 Kafka 消息源从而获取信息
 
 ## 默认构建命令
@@ -22,8 +24,9 @@ default:
   groupID: ""
   partition: 0
   maxBytes: 1000000
-  offset: 0
 ```
+
+你可以通过 api 的方式提前检查对应 sink 端点的连通性: [连通性检查](../../../api/restapi/connection.md#连通性检查)
 
 ### 全局配置
 
@@ -44,7 +47,3 @@ eKuiper 消费 kafka 消息时所指定的 partition
 ### maxBytes
 
 单个 kafka 消息批次最大所能携带的 bytes 数，默认为 1MB
-
-### offset
-
-eKuiper 启动向 kafka 进行消息消费时所指定的 offset， -1 代表 lastOffset，-2 代表 firstOffset。

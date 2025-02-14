@@ -1,4 +1,4 @@
-// Copyright 2023 EMQ Technologies Co., Ltd.
+// Copyright 2023-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,100 +15,153 @@
 package http
 
 import (
+	"encoding/json"
 	"fmt"
-	"reflect"
 	"testing"
 
-	mockContext "github.com/lf-edge/ekuiper/internal/io/mock/context"
+	"github.com/stretchr/testify/require"
+
+	mockContext "github.com/lf-edge/ekuiper/v2/pkg/mock/context"
 )
 
-func TestHeaderConf(t *testing.T) {
-	tests := []struct {
-		name    string
-		data    map[string]interface{}
-		props   map[string]interface{}
-		err     error
-		headers map[string]string
+func TestInitConf(t *testing.T) {
+	m := map[string]interface{}{}
+	c := &ClientConf{}
+	require.NoError(t, c.InitConf("", m))
+	m = map[string]interface{}{
+		"url": "",
+	}
+	c = &ClientConf{}
+	require.Error(t, c.InitConf("", m))
+
+	m = map[string]interface{}{
+		"method": "123",
+	}
+	c = &ClientConf{}
+	require.Error(t, c.InitConf("", m))
+
+	m = map[string]interface{}{
+		"timeout": -1,
+	}
+	c = &ClientConf{}
+	require.Error(t, c.InitConf("", m))
+
+	m = map[string]interface{}{
+		"timeout": -1,
+	}
+	c = &ClientConf{}
+	require.Error(t, c.InitConf("", m))
+
+	m = map[string]interface{}{
+		"responseType": "mock",
+	}
+	c = &ClientConf{}
+	require.Error(t, c.InitConf("", m))
+
+	m = map[string]interface{}{
+		"method": "post",
+	}
+	c = &ClientConf{}
+	require.NoError(t, c.InitConf("", m))
+
+	m = map[string]interface{}{
+		"bodyType": "123",
+	}
+	c = &ClientConf{}
+	require.Error(t, c.InitConf("", m))
+
+	m = map[string]interface{}{
+		"url": "scae::",
+	}
+	c = &ClientConf{}
+	require.Error(t, c.InitConf("", m))
+
+	m = map[string]interface{}{
+		"compression": "zlib",
+	}
+	c = &ClientConf{}
+	require.NoError(t, c.InitConf("", m))
+
+	m = map[string]interface{}{
+		"compression": "mock",
+	}
+	c = &ClientConf{}
+	require.Error(t, c.InitConf("", m))
+}
+
+func TestDecode(t *testing.T) {
+	testcases := []struct {
+		v   interface{}
+		got []map[string]interface{}
 	}{
 		{
-			name: "template",
-			data: map[string]interface{}{
-				"id":          1234,
-				"temperature": 20,
+			v: map[string]interface{}{
+				"method": "post",
 			},
-			props: map[string]interface{}{
-				"url":     "http://localhost:9090/",
-				"headers": "{\"custom\":\"{{.id}}\",\"sourceCode\":\"1090\",\"serviceCode\":\"1090109107\" }",
-			},
-			headers: map[string]string{
-				"custom":      "1234",
-				"sourceCode":  "1090",
-				"serviceCode": "1090109107",
-			},
-		},
-		{
-			name: "wrong template",
-			data: map[string]interface{}{
-				"id":          1234,
-				"temperature": 20,
-			},
-			props: map[string]interface{}{
-				"url":     "http://localhost:9090/",
-				"headers": "{\"custom\":\"{{{.idd}}\",\"sourceCode\":\"1090\",\"serviceCode\":\"1090109107\" }",
-			},
-			err: fmt.Errorf("fail to parse the header template {\"custom\":\"{{{.idd}}\",\"sourceCode\":\"1090\",\"serviceCode\":\"1090109107\" }: template: sink:1: unexpected \"{\" in command"),
-		},
-		{
-			name: "wrong parsed template",
-			data: map[string]interface{}{
-				"id":          1234,
-				"temperature": 20,
-			},
-			props: map[string]interface{}{
-				"url":     "http://localhost:9090/",
-				"headers": "{{.id}}",
-			},
-			err: fmt.Errorf("parsed header template is not json: 1234"),
-		},
-		{
-			name: "wrong header entry template",
-			data: map[string]interface{}{
-				"id":          1234,
-				"temperature": 20,
-			},
-			props: map[string]interface{}{
-				"url": "http://localhost:9090/",
-				"headers": map[string]interface{}{
-					"custom": "{{{.id}}",
+			got: []map[string]interface{}{
+				{
+					"method": "post",
 				},
 			},
-			err: fmt.Errorf("fail to parse the header entry custom: template: sink:1: unexpected \"{\" in command"),
+		},
+		{
+			v: []map[string]interface{}{
+				{
+					"method": "post",
+				},
+			},
+			got: []map[string]interface{}{
+				{
+					"method": "post",
+				},
+			},
+		},
+		{
+			v: []interface{}{
+				map[string]interface{}{
+					"method": "post",
+				},
+			},
+			got: []map[string]interface{}{
+				{
+					"method": "post",
+				},
+			},
 		},
 	}
-	fmt.Printf("The test bucket size is %d.\n\n", len(tests))
-	ctx := mockContext.NewMockContext("none", "httppull_init")
-	for i, tt := range tests {
-		t.Run(fmt.Sprintf("Test %d: %s", i, tt.name), func(t *testing.T) {
-			r := &ClientConf{}
-			err := r.InitConf("", tt.props, WithCheckInterval(true))
-			if err != nil {
-				t.Errorf("Unexpected error: %v", err)
-				return
-			}
-			headers, err := r.parseHeaders(ctx, tt.data)
-			if err != nil {
-				if tt.err == nil {
-					t.Errorf("Expected error: %v", err)
-				} else {
-					if err.Error() != tt.err.Error() {
-						t.Errorf("Error mismatch\nexp\t%v\ngot\t%v", tt.err, err)
-					}
-				}
-				return
-			}
-			if !reflect.DeepEqual(headers, tt.headers) {
-				t.Errorf("Parsed headers mismatch\nexp\t%+v\ngot\t%+v", tt.headers, headers)
-			}
-		})
+	for _, tc := range testcases {
+		data, err := json.Marshal(tc.v)
+		require.NoError(t, err)
+		g, err := decode(data)
+		require.NoError(t, err)
+		require.Equal(t, tc.got, g)
 	}
+}
+
+func TestClientAuth(t *testing.T) {
+	server := createServer()
+	defer func() {
+		server.Close()
+	}()
+
+	c := &ClientConf{}
+	ctx := mockContext.NewMockContext("1", "2")
+	require.NoError(t, c.InitConf("", map[string]interface{}{
+		"oauth": map[string]interface{}{
+			"access": map[string]interface{}{
+				"url":    fmt.Sprintf("%s/auth", server.URL),
+				"expire": "3600",
+				"body":   `{"a":1}`,
+			},
+			"refresh": map[string]interface{}{
+				"url": fmt.Sprintf("%s/refresh", server.URL),
+				"headers": map[string]interface{}{
+					"a": "{{.message}}",
+				},
+				"body": `{"a":1}`,
+			},
+		},
+	}))
+	require.NoError(t, c.auth(ctx))
+	require.NoError(t, c.refresh(ctx))
 }

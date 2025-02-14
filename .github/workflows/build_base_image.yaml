@@ -1,5 +1,9 @@
 name: Update docker base image
 
+permissions:
+  contents: write
+  packages: write
+
 ## Update the base image every day
 on:
   workflow_dispatch:
@@ -19,15 +23,14 @@ jobs:
       matrix:
         os:
           - debian
-          - centos
           - alpine
         golang:
-          - 1.20.2
+          - 1.23.4
 
     steps:
-      - uses: actions/checkout@v3
-      - uses: docker/setup-buildx-action@v2
-      - uses: docker/setup-qemu-action@v2
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-qemu-action@v3
         with:
           image: tonistiigi/binfmt:latest
           platforms: all
@@ -41,18 +44,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - uses: docker/build-push-action@v4
-        if: matrix.os == 'centos'
-        with:
-          push: true
-          pull: true
-          cache-from: type=local,src=/tmp/.docker-buildx-cache,mode=max
-          cache-to: type=local,dest=/tmp/.docker-buildx-cache-new,mode=max
-          platforms: linux/amd64,linux/arm64
-          build-args: GO_VERSION=${{ matrix.golang }}
-          tags: ghcr.io/${{ github.repository }}/base:${{ matrix.golang }}-${{ matrix.os }}
-          file: .github/dockerfile/Dockerfile.${{ matrix.os }}
-      - uses: docker/build-push-action@v4
+      - uses: docker/build-push-action@v6
         if: matrix.os == 'debian'
         with:
           push: true
@@ -63,7 +55,7 @@ jobs:
           build-args: GO_VERSION=${{ matrix.golang }}
           tags: ghcr.io/${{ github.repository }}/base:${{ matrix.golang }}-${{ matrix.os }}
           file: .github/dockerfile/Dockerfile.${{ matrix.os }}
-      - uses: docker/build-push-action@v4
+      - uses: docker/build-push-action@v6
         if: matrix.os == 'alpine'
         with:
           push: true

@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,15 +16,20 @@ package function
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+	"golang.org/x/text/language"
+	"golang.org/x/text/message"
+	"golang.org/x/text/number"
+
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
 func registerStrFunc() {
@@ -176,6 +181,19 @@ func registerStrFunc() {
 		val:   ValidateTwoStrArg,
 		check: returnNilIfHasAnyNil,
 	}
+	builtins["reverse"] = builtinFunc{
+		fType: ast.FuncTypeScalar,
+		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
+			arg0 := cast.ToStringAlways(args[0])
+			runes := []rune(arg0)
+			for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+				runes[i], runes[j] = runes[j], runes[i]
+			}
+			return string(runes), true
+		},
+		val:   ValidateOneStrArg,
+		check: returnNilIfHasAnyNil,
+	}
 	builtins["rpad"] = builtinFunc{
 		fType: ast.FuncTypeScalar,
 		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
@@ -281,6 +299,17 @@ func registerStrFunc() {
 			arg0, arg1 := cast.ToStringAlways(args[0]), cast.ToStringAlways(args[1])
 			ss := strings.Split(arg0, arg1)
 			v, _ := cast.ToInt(args[2], cast.STRICT)
+			switch {
+			case v > (len(ss) - 1):
+				return fmt.Errorf("%d out of index array (size = %d)", v, len(ss)), false
+			case v >= 0:
+				return ss[v], true
+			case v < -len(ss):
+				return fmt.Errorf("%d out of index array (size = %d)", v, len(ss)), false
+			case v < 0:
+				return ss[len(ss)+v], true
+			}
+
 			if v > (len(ss) - 1) {
 				return fmt.Errorf("%d out of index array (size = %d)", v, len(ss)), false
 			} else {
@@ -326,6 +355,49 @@ func registerStrFunc() {
 			return strings.ToUpper(arg0), true
 		},
 		val:   ValidateOneStrArg,
+		check: returnNilIfHasAnyNil,
+	}
+	builtins["format"] = builtinFunc{
+		fType: ast.FuncTypeScalar,
+		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
+			var v1 float64
+			var v2 int
+
+			v1, _ = cast.ToFloat64(args[0], cast.CONVERT_SAMEKIND)
+			v2, _ = cast.ToInt(args[1], cast.STRICT)
+			if v2 < 0 {
+				return errors.New("the decimal places must greater or equal than 0"), false
+			}
+			if len(args) == 3 {
+				v3 := cast.ToStringAlways(args[2])
+
+				tag, err := language.Parse(v3)
+				if err != nil {
+					return errors.New("not support for the specific locale:" + v3), false
+				}
+				_, _, r := tag.Raw()
+				if !r.IsCountry() {
+					return errors.New("not support for the specific locale:" + v3), false
+				}
+				p := message.NewPrinter(tag)
+				return p.Sprint(number.Decimal(v1, number.Scale(v2))), true
+			} else {
+				p := message.NewPrinter(language.MustParse("en"))
+				return p.Sprint(number.Decimal(v1, number.Scale(v2), number.NoSeparator())), true
+			}
+		},
+		val: func(_ api.FunctionContext, args []ast.Expr) error {
+			if err := ValidateAtLeast(2, len(args)); err != nil {
+				return err
+			}
+			if !ast.IsIntegerArg(args[1]) {
+				return ProduceErrInfo(1, "integer")
+			}
+			if len(args) == 3 && !ast.IsStringArg(args[2]) {
+				return ProduceErrInfo(2, "string")
+			}
+			return nil
+		},
 		check: returnNilIfHasAnyNil,
 	}
 }

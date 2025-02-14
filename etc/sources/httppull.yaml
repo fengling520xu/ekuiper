@@ -4,10 +4,10 @@ default:
   url: http://localhost
   # post, get, put, delete
   method: post
-  # The interval between the requests, time unit is ms
-  interval: 10000
-  # The timeout for http request, time unit is ms
-  timeout: 5000
+  # The interval between the requests
+  interval: 10s
+  # The timeout for http request
+  timeout: 5s
   # If it's set to true, then will compare with last result; If response of two requests are the same, then will skip sending out the result.
   # The possible setting could be: true/false
   incremental: false
@@ -32,6 +32,9 @@ default:
 #      body: '{"username": "admin","password": "123456"}'
 #      # Expire time of the token in string, time unit is second, allow template
 #      expire: '3600'
+#      # Request header
+#      headers:
+#        Accept: application/json
 #    # Refresh token fetch method
 #    refresh:
 #      # Url to refresh the token, always use POST method
@@ -42,9 +45,9 @@ default:
 #        token: '{{.data.token}}'
 #      # Request body
 #      body: ''
-neuron:
+token_conf:
   # url of the request server address
-  url: http://127.0.0.1:7000/api/v2/node/state
+  url: http://127.0.0.1:8085/api/neuron/node/state
   # post, get, put, delete
   method: get
   # The interval between the requests, time unit is ms
@@ -69,12 +72,8 @@ neuron:
     # Access token fetch method
     access:
       # Url to fetch access token, always use POST method
-      url: http://127.0.0.1:7000/api/v2/login
+      url: http://127.0.0.1:8085/api/login
       # Body of the request
       body: '{"name": "admin","pass": "0000"}'
       # Expire time of the token, time unit is second, allow template
       expire: '3600'
-#Override the global configurations
-application_conf: #Conf_key
-  incremental: true
-  url: http://localhost:9090/

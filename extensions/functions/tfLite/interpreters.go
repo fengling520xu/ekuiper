@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build tflite
+
 package main
 
 import (
@@ -21,7 +23,7 @@ import (
 
 	"github.com/mattn/go-tflite"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
 )
 
 var ipManager *interpreterManager

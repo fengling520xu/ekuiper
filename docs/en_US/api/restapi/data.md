@@ -4,7 +4,7 @@ eKuiper REST api allows to import or export data.
 
 ## Data Format
 
-The file format for importing and exporting data is JSON, which can contain : `streams`, `tables`, `rules`, `plugin`, `source yaml` and so on. Each type holds the the key-value pair of the name and the creation statement. In the following example file, we define stream 、rules、table、plugin、source config、sink config
+The file format for importing and exporting data is JSON, which can contain : `streams`, `tables`, `rules`, `plugin`, `source yaml` and so on. Each type holds the key-value pair of the name and the creation statement. In the following example file, we define stream 、rules、table、plugin、source config、sink config
 
 ```json
 {
@@ -37,6 +37,9 @@ The file format for importing and exporting data is JSON, which can contain : `s
     "Schema":{
     },
     "uploads":{
+    },
+    "scripts":{
+      "area":"{\"id\":\"area\",\"description\":\"calculate area\",\"script\":\"function area(x, y) { return x * y; }\",\"isAgg\":false}"
     }
 }
 ```
@@ -90,6 +93,30 @@ Content-Type: application/json
 }
 ```
 
+Example 5: Import data through an asynchronous API. After receiving the request, the server will generate a task ID, then execute the task in the background and return a response immediately.
+
+```` shell
+POST http://{{host}}/async/data/import
+Content type: application/json
+
+{
+  "content": "$data json content"
+}
+
+response
+
+{
+  "id": "$taskID"
+}
+````
+
+Check the running status of background tasks by task ID
+
+```` shell
+Get http://{{host}}/async/task/{{id}}
+Content type: application/json
+````
+
 ## Import data status
 
 This API returns data import errors. If all returns are empty, it means that the import is completely successful.
@@ -115,7 +142,8 @@ Content-Type: application/json
   "connectionConfig":{},
   "Service":{},
   "Schema":{},
-  "uploads":{}
+  "uploads":{},
+  "scripts":{}
 }
 
 ```
@@ -139,7 +167,8 @@ Content-Type: application/json
   "connectionConfig":{},
   "Service":{},
   "Schema":{},
-  "uploads":{}
+  "uploads":{},
+  "scripts":{}
 }
 ```
 
@@ -157,4 +186,44 @@ Example 2: export specific rules related data
 
 ```shell
 POST -d '["rule1","rule2"]' http://{{host}}/data/export
+```
+
+## Import and export data through yaml format
+
+For eKuiper configuration, the yaml format is more readable. eKuiper also supports importing and exporting configurations through yaml format, including stream `stream`, table `table`, rule `rule`, plug-in `plugin`, and source configuration etc. Each type stores a name and a key-value pair of the creation statement. In the following example file, we define flows, rules, tables, plug-ins, source configurations, and target action configurations.
+
+GET /v2/data/export
+
+```yaml
+sourceConfig:
+    sources.mqtt.mqttconf1:
+        connectionSelector: mqttcon
+        qos: 1
+        sourceType: stream
+connectionConfig:
+    connections.mqtt.mqttcon:
+        insecureSkipVerify: false
+        protocolVersion: 3.1.1
+        server: tcp://127.0.0.1:1883
+streams:
+    mqttstream1:
+        sql: ' CREATE STREAM mqttstream1 ()       WITH (DATASOURCE="topic1", FORMAT="json", CONF_KEY="mqttconf1", TYPE="mqtt", SHARED="false", );'
+rules:
+    rule1:
+        triggered: false
+        id: rule1
+        sql: select * from mqttstream1
+        actions:
+            - log: {}
+```
+
+Import Configuration
+
+POST http://{{host}}/v2/data/import
+Content-Type: application/json
+
+```json
+{
+  "file": "file:///tmp/a.yaml"
+}
 ```

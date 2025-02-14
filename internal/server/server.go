@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,33 +16,40 @@ package server
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/sirupsen/logrus"
 	"go.uber.org/automaxprocs/maxprocs"
 
-	"github.com/lf-edge/ekuiper/internal/binder/function"
-	"github.com/lf-edge/ekuiper/internal/binder/io"
-	"github.com/lf-edge/ekuiper/internal/binder/meta"
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/keyedstate"
-	meta2 "github.com/lf-edge/ekuiper/internal/meta"
-	"github.com/lf-edge/ekuiper/internal/pkg/store"
-	"github.com/lf-edge/ekuiper/internal/pkg/store/definition"
-	"github.com/lf-edge/ekuiper/internal/processor"
-	"github.com/lf-edge/ekuiper/internal/topo/connection/factory"
-	"github.com/lf-edge/ekuiper/internal/topo/rule"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/cast"
-	"github.com/lf-edge/ekuiper/pkg/schedule"
+	"github.com/lf-edge/ekuiper/v2/internal/binder/function"
+	"github.com/lf-edge/ekuiper/v2/internal/binder/io"
+	"github.com/lf-edge/ekuiper/v2/internal/binder/meta"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/io/http/httpserver"
+	"github.com/lf-edge/ekuiper/v2/internal/keyedstate"
+	meta2 "github.com/lf-edge/ekuiper/v2/internal/meta"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/async"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/sig"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/store"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/store/definition"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin/portable/runtime"
+	"github.com/lf-edge/ekuiper/v2/internal/processor"
+	"github.com/lf-edge/ekuiper/v2/internal/server/bump"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/rule"
+	"github.com/lf-edge/ekuiper/v2/metrics"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/connection"
+	"github.com/lf-edge/ekuiper/v2/pkg/modules"
+	"github.com/lf-edge/ekuiper/v2/pkg/tracer"
 )
 
 var (
@@ -54,7 +61,23 @@ var (
 	streamProcessor        *processor.StreamProcessor
 	rulesetProcessor       *processor.RulesetProcessor
 	ruleMigrationProcessor *RuleMigrationProcessor
+	stopSignal             chan struct{}
+	cpuProfiler            = &ekuiperProfile{}
 )
+
+// newNetListener allows EdgeX Foundry, protected by OpenZiti to override and obtain a transport
+// protected by OpenZiti's zero trust connectivity. See client_edgex.go where this function is
+// set in an init() call
+var newNetListener = newTcpListener
+
+func newTcpListener(addr string, logger *logrus.Logger) (net.Listener, error) {
+	logger.Info("using ListenMode 'http'")
+	return net.Listen("tcp", addr)
+}
+
+func stopEKuiper() {
+	stopSignal <- struct{}{}
+}
 
 // Create path if mount an empty dir. For edgeX, all the folders must be created priorly
 func createPaths() {
@@ -98,11 +121,14 @@ func getStoreConfigByKuiperConfig(c *conf.KuiperConf) (*store.StoreConf, error) 
 			Host:     c.Store.Redis.Host,
 			Port:     c.Store.Redis.Port,
 			Password: c.Store.Redis.Password,
-			Timeout:  c.Store.Redis.Timeout,
+			Timeout:  time.Duration(c.Store.Redis.Timeout),
 		},
 		SqliteConfig: definition.SqliteConfig{
 			Path: dataDir,
 			Name: c.Store.Sqlite.Name,
+		},
+		FdbConfig: definition.FdbConfig{
+			Path: c.Store.Fdb.Path,
 		},
 	}
 	return sc, nil
@@ -112,8 +138,27 @@ func StartUp(Version string) {
 	version = Version
 	startTimeStamp = time.Now().Unix()
 	createPaths()
+	conf.SetupEnv()
 	conf.InitConf()
-	factory.InitClientsFactory()
+	// Print inited modules
+	for n := range modules.Sources {
+		conf.Log.Infof("register source %s", n)
+	}
+	for n := range modules.Sinks {
+		conf.Log.Infof("register sink %s", n)
+	}
+	for n := range modules.LookupSources {
+		conf.Log.Infof("register lookup source %s", n)
+	}
+	for n := range modules.Converters {
+		conf.Log.Infof("register format %s", n)
+	}
+
+	serverCtx, serverCancel := context.WithCancel(context.Background())
+	if conf.Config.Basic.EnableResourceProfiling {
+		err := StartCPUProfiling(serverCtx, cpuProfiler)
+		conf.Log.Warn(err)
+	}
 
 	undo, _ := maxprocs.Set(maxprocs.Logger(conf.Log.Infof))
 	defer undo()
@@ -126,9 +171,23 @@ func StartUp(Version string) {
 	if err != nil {
 		panic(err)
 	}
+	if err := bump.InitBumpManager(); err != nil {
+		panic(err)
+	}
+	dataDir, _ := conf.GetDataLoc()
+	if err := bump.BumpToCurrentVersion(dataDir); err != nil {
+		panic(err)
+	}
+	if err := tracer.InitTracer(); err != nil {
+		conf.Log.Warn(err)
+	} else {
+		conf.Log.Infof("tracer init successfully")
+	}
+
 	keyedstate.InitKeyedStateKV()
 
 	meta2.InitYamlConfigManager()
+	httpserver.InitGlobalServerManager(conf.Config.Source.HttpServerIp, conf.Config.Source.HttpServerPort, conf.Config.Source.HttpServerTls)
 	ruleProcessor = processor.NewRuleProcessor()
 	streamProcessor = processor.NewStreamProcessor()
 	rulesetProcessor = processor.NewRulesetProcessor(ruleProcessor, streamProcessor)
@@ -151,10 +210,16 @@ func StartUp(Version string) {
 	if err != nil {
 		panic(err)
 	}
+	conf.SetupConnectionProps()
+	connection.InitConnectionManager()
+	if err := connection.ReloadNamedConnection(); err != nil {
+		conf.Log.Warn(err)
+	}
 	meta.Bind()
+	sig.InitMQTTControl()
 	initRuleset()
 
-	registry = &RuleRegistry{internal: make(map[string]*rule.RuleState)}
+	registry = &RuleRegistry{internal: make(map[string]*rule.State)}
 	// Start lookup tables
 	streamProcessor.RecoverLookupTable()
 	// Start rules
@@ -169,24 +234,28 @@ func StartUp(Version string) {
 				logger.Error(err)
 				continue
 			}
-			// err = server.StartRule(rule, &reply)
-			reply = recoverRule(rule)
+			reply = registry.RecoverRule(rule)
 			if 0 != len(reply) {
 				logger.Info(reply)
 			}
 		}
 	}
-	exit := make(chan struct{})
-	go runScheduleRuleChecker(exit)
+	go runScheduleRuleChecker(serverCtx)
+	metrics.InitMetricsDumpJob(serverCtx)
+	async.InitManager()
 
 	// Start rest service
 	srvRest := createRestServer(conf.Config.Basic.RestIp, conf.Config.Basic.RestPort, conf.Config.Basic.Authentication)
 	go func() {
 		var err error
+		ln, listenErr := newNetListener(srvRest.Addr, logger)
+		if listenErr != nil {
+			panic(listenErr)
+		}
 		if conf.Config.Basic.RestTls == nil {
-			err = srvRest.ListenAndServe()
+			err = srvRest.Serve(ln)
 		} else {
-			err = srvRest.ListenAndServeTLS(conf.Config.Basic.RestTls.Certfile, conf.Config.Basic.RestTls.Keyfile)
+			err = srvRest.ServeTLS(ln, conf.Config.Basic.RestTls.Certfile, conf.Config.Basic.RestTls.Keyfile)
 		}
 		if err != nil && err != http.ErrServerClosed {
 			logger.Fatal("Error serving rest service: ", err)
@@ -198,12 +267,15 @@ func StartUp(Version string) {
 		logger.Infof("start service %s", k)
 		v.serve()
 	}
+	// Register conf managers
+	InitConfManagers()
 
 	// Startup message
 	restHttpType := "http"
 	if conf.Config.Basic.RestTls != nil {
 		restHttpType = "https"
 	}
+	stopSignal = make(chan struct{})
 	msg := fmt.Sprintf("Serving kuiper (version - %s) on port %d, and restful api on %s://%s.", Version, conf.Config.Basic.Port, restHttpType, cast.JoinHostPortInt(conf.Config.Basic.RestIp, conf.Config.Basic.RestPort))
 	logger.Info(msg)
 	fmt.Println(msg)
@@ -211,166 +283,46 @@ func StartUp(Version string) {
 	// Stop the services
 	sigint := make(chan os.Signal, 1)
 	signal.Notify(sigint, os.Interrupt, syscall.SIGTERM)
-	<-sigint
-	exit <- struct{}{}
-
-	ctx, cancel := context.WithTimeout(context.TODO(), 3*time.Second)
-	defer cancel()
-	if err = srvRest.Shutdown(ctx); err != nil {
-		logger.Errorf("rest server shutdown error: %v", err)
+	select {
+	case <-sigint:
+		conf.Log.Info("eKuiper stopped by SIGTERM")
+	case <-stopSignal:
+		// sleep 1 sec in order to let stop request got response
+		time.Sleep(time.Second)
+		conf.Log.Info("eKuiper stopped by Stop request")
 	}
-	logger.Info("rest server successfully shutdown.")
+	serverCancel()
+	// wait rule checker exit
+	time.Sleep(10 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.TODO(), time.Duration(conf.Config.Basic.GracefulShutdownTimeout))
+	defer cancel()
+	wg := sync.WaitGroup{}
+	// wait all service stop
+	wg.Add(2)
+	go func() {
+		conf.Log.Info("start to stop all rules")
+		waitAllRuleStop()
+		wg.Done()
+	}()
+	go func() {
+		conf.Log.Info("start to stop rest server")
+		if err = srvRest.Shutdown(ctx); err != nil {
+			logger.Errorf("rest server shutdown error: %v", err)
+		}
+		logger.Info("rest server successfully shutdown.")
+		wg.Done()
+	}()
+	wg.Wait()
+	// kill all plugin process
+	runtime.GetPluginInsManager().KillAll()
 
 	// close extend services
 	for k, v := range servers {
-		logger.Infof("close service %s", k)
+		logger.Infof("start to close service %s", k)
 		v.close()
+		logger.Infof("close service %s successfully", k)
 	}
 
 	os.Exit(0)
-}
-
-func initRuleset() error {
-	loc, err := conf.GetDataLoc()
-	if err != nil {
-		return err
-	}
-	signalFile := filepath.Join(loc, "initialized")
-	if _, err := os.Stat(signalFile); errors.Is(err, os.ErrNotExist) {
-		defer os.Create(signalFile)
-		content, err := os.ReadFile(filepath.Join(loc, "init.json"))
-		if err != nil {
-			conf.Log.Errorf("fail to read init file: %v", err)
-			return nil
-		}
-		conf.Log.Infof("start to initialize ruleset")
-		_, counts, err := rulesetProcessor.Import(content)
-		if err != nil {
-			conf.Log.Errorf("fail to import ruleset: %v", err)
-			return nil
-		}
-		conf.Log.Infof("initialzie %d streams, %d tables and %d rules", counts[0], counts[1], counts[2])
-	}
-	return nil
-}
-
-func resetAllRules() error {
-	rules, err := ruleProcessor.GetAllRules()
-	if err != nil {
-		return err
-	}
-	for _, name := range rules {
-		_ = deleteRule(name)
-		_, err := ruleProcessor.ExecDrop(name)
-		if err != nil {
-			logger.Warnf("delete rule: %s with error %v", name, err)
-			continue
-		}
-	}
-	return nil
-}
-
-func resetAllStreams() error {
-	allStreams, err := streamProcessor.GetAll()
-	if err != nil {
-		return err
-	}
-	Streams := allStreams["streams"]
-	Tables := allStreams["tables"]
-
-	for name := range Streams {
-		_, err2 := streamProcessor.DropStream(name, ast.TypeStream)
-		if err2 != nil {
-			logger.Warnf("streamProcessor DropStream %s error: %v", name, err2)
-			continue
-		}
-	}
-	for name := range Tables {
-		_, err2 := streamProcessor.DropStream(name, ast.TypeTable)
-		if err2 != nil {
-			logger.Warnf("streamProcessor DropTable %s error: %v", name, err2)
-			continue
-		}
-	}
-	return nil
-}
-
-func runScheduleRuleCheckerByInterval(d time.Duration, exit <-chan struct{}) {
-	conf.Log.Infof("start patroling schedule rule state")
-	ticker := time.NewTicker(d)
-	defer func() {
-		ticker.Stop()
-		conf.Log.Infof("exit partoling schedule rule state")
-	}()
-	for {
-		select {
-		case <-exit:
-			return
-		case <-ticker.C:
-			rs, err := getAllRulesWithState()
-			if err != nil {
-				conf.Log.Errorf("get all rules with stated failed, err:%v", err)
-				continue
-			}
-			now := conf.GetNow()
-			for _, r := range rs {
-				if err := handleScheduleRuleState(now, r.rule, r.state); err != nil {
-					conf.Log.Errorf("handle schedule rule %v state failed, err:%v", r.rule.Id, err)
-				}
-			}
-		}
-	}
-}
-
-func runScheduleRuleChecker(exit <-chan struct{}) {
-	d, err := time.ParseDuration(conf.Config.Basic.RulePatrolInterval)
-	if err != nil {
-		conf.Log.Errorf("parse rulePatrolInterval failed, err:%v", err)
-		return
-	}
-	runScheduleRuleCheckerByInterval(d, exit)
-}
-
-func handleScheduleRuleState(now time.Time, r *api.Rule, state string) error {
-	scheduleActionSignal := handleScheduleRule(now, r, state)
-	conf.Log.Debugf("rule %v origin state: %v, sginal: %v", r.Id, state, scheduleActionSignal)
-	switch scheduleActionSignal {
-	case scheduleRuleActionStart:
-		return startRuleInternal(r.Id)
-	case scheduleRuleActionStop:
-		stopRuleInternal(r.Id)
-	}
-	return nil
-}
-
-type scheduleRuleAction int
-
-const (
-	scheduleRuleActionDoNothing scheduleRuleAction = iota
-	scheduleRuleActionStart
-	scheduleRuleActionStop
-)
-
-func handleScheduleRule(now time.Time, r *api.Rule, state string) scheduleRuleAction {
-	options := r.Options
-	if options != nil && options.Cron == "" && options.Duration == "" && len(options.CronDatetimeRange) > 0 {
-		var isInRange bool
-		var err error
-		for _, cRange := range options.CronDatetimeRange {
-			isInRange, err = schedule.IsInScheduleRange(now, cRange.Begin, cRange.End)
-			if err != nil {
-				conf.Log.Errorf("check rule %v schedule failed, err:%v", r.Id, err)
-				return scheduleRuleActionDoNothing
-			}
-			if isInRange {
-				break
-			}
-		}
-		if isInRange && state == rule.RuleWait && r.Triggered {
-			return scheduleRuleActionStart
-		} else if !isInRange && state == rule.RuleStarted && r.Triggered {
-			return scheduleRuleActionStop
-		}
-	}
-	return scheduleRuleActionDoNothing
 }

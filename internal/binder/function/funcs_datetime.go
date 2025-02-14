@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,10 +19,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/timex"
 )
 
 var errTooManyArguments = errors.New("too many arguments")
@@ -120,7 +121,7 @@ func registerDateTimeFunc() {
 				return ProduceErrInfo(0, "datetime")
 			}
 
-			if ast.IsStringArg(args[1]) {
+			if !ast.IsStringArg(args[1]) {
 				return ProduceErrInfo(1, "string")
 			}
 			return nil
@@ -492,7 +493,7 @@ func execGetCurrentDateTime(timeOnly bool) funcExe {
 // getCurrentWithFsp returns the current date/time with the specified number of fractional seconds precision.
 func getCurrentWithFsp(fsp int, timeOnly bool) (string, error) {
 	format := "yyyy-MM-dd HH:mm:ss"
-	now := conf.GetNow().In(cast.GetConfiguredTimeZone())
+	now := timex.GetNow().In(cast.GetConfiguredTimeZone())
 	switch fsp {
 	case 1:
 		format += ".S"

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright 2021-2023 EMQ Technologies Co., Ltd.
+# Copyright 2021-2025 EMQ Technologies Co., Ltd.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -52,12 +52,15 @@ downloadjar "/opt/jmeter/lib/commons-lang-2.5.jar" https://repo1.maven.org/maven
 downloadjar "/opt/jmeter/lib/commons-logging-1.1.1.jar" https://repo1.maven.org/maven2/commons-logging/commons-logging/1.1.1/commons-logging-1.1.1.jar
 downloadjar "/opt/jmeter/lib/ezmorph-1.0.6.jar" https://repo1.maven.org/maven2/net/sf/ezmorph/ezmorph/1.0.6/ezmorph-1.0.6.jar
 
-ver=`git describe --tags --always`
+ver=`git describe --tags --always --match 'v[0-9]*.[0-9]*.[0-9]*' | sed 's/^v//g'`
 os=`uname -s | tr "[A-Z]" "[a-z]"`
 base_dir=_build/kuiper-"$ver"-"$os"-amd64
 fvt_dir=`pwd`
 
 rm -rf jmeter_logs
+
+echo -e "-------------------- management test ------------------------\n"
+/opt/jmeter/bin/jmeter.sh -Jjmeter.save.saveservice.output_format=xml -n -t test/management_test/data_import_export.jmx -Dfvt="$fvt_dir" -l jmeter_logs/data_import_export.jtl -j jmeter_logs/data_import_export.log
 
 /opt/jmeter/bin/jmeter.sh -Jjmeter.save.saveservice.output_format=xml -n -t test/streams_test.jmx -Dbase="$base_dir" -l jmeter_logs/stream_test.jtl -j jmeter_logs/stream_test.log
 echo -e "---------------------------------------------\n"
@@ -99,7 +102,7 @@ if test $with_edgex = true; then
   /opt/jmeter/bin/jmeter.sh -Jjmeter.save.saveservice.output_format=xml -n -t test/edgex_mqtt_sink_rule.jmx -Dfvt="$fvt_dir" -l jmeter_logs/edgex_mqtt_sink_rule.jtl -j jmeter_logs/edgex_mqtt_sink_rule.log
   echo -e "---------------------------------------------\n"
 
-   /opt/jmeter/bin/jmeter.sh -Jjmeter.save.saveservice.output_format=xml -n -t test/edgex_redis_share_connection_sink_rule.jmx -Dfvt="$fvt_dir" -l jmeter_logs/edgex_redis_share_connection_sink_rule.jtl -j jmeter_logs/edgex_redis_share_connection_sink_rule.log
+   /opt/jmeter/bin/jmeter.sh -Jjmeter.save.saveservice.output_format=xml -n -t test/edgex_share_connection_sink_rule.jmx -Dfvt="$fvt_dir" -l jmeter_logs/edgex_share_connection_sink_rule.jtl -j jmeter_logs/edgex_share_connection_sink_rule.log
   echo -e "---------------------------------------------\n"
 
 
@@ -112,7 +115,6 @@ echo -e "---------------------------------------------\n"
 
 /opt/jmeter/bin/jmeter.sh -Jjmeter.save.saveservice.output_format=xml -n -t test/portable_end_2_end.jmx -Dfvt="$fvt_dir" -l jmeter_logs/portable_end_2_end.jtl -j jmeter_logs/portable_end_2_end.log
 echo -e "---------------------------------------------\n"
-
 
 /opt/jmeter/bin/jmeter.sh -Jjmeter.save.saveservice.output_format=xml -n -t test/select_countwindow_rule.jmx -Dfvt="$fvt_dir" -l jmeter_logs/select_countwindow_rule.jtl -j jmeter_logs/select_countwindow_rule.log
 echo -e "---------------------------------------------\n"
@@ -159,8 +161,6 @@ echo -e "---------------------------------------------\n"
 /opt/jmeter/bin/jmeter.sh -Jjmeter.save.saveservice.output_format=xml -n -t test/lookup_table_sql.jmx -Dfvt="$fvt_dir" -l jmeter_logs/lookup_table_sql.jtl -j jmeter_logs/lookup_table_sql.log
 echo -e "---------------------------------------------\n"
 
-echo -e "-------------------- management test ------------------------\n"
-/opt/jmeter/bin/jmeter.sh -Jjmeter.save.saveservice.output_format=xml -n -t test/management_test/data_import_export.jmx -Dfvt="$fvt_dir" -l jmeter_logs/data_import_export.jtl -j jmeter_logs/data_import_export.log
 echo -e "---------------------------------------------\n"
 /opt/jmeter/bin/jmeter.sh -Jjmeter.save.saveservice.output_format=xml -n -t test/management_test/rule_metrics.jmx -Dfvt="$fvt_dir" -l jmeter_logs/rule_metrics.jtl -j jmeter_logs/rule_metrics.log
 echo -e "---------------------------------------------\n"

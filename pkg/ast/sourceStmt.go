@@ -54,6 +54,8 @@ type JsonStreamField struct {
 	Type       string                      `json:"type"`
 	Items      *JsonStreamField            `json:"items,omitempty"`
 	Properties map[string]*JsonStreamField `json:"properties,omitempty"`
+
+	Selected bool
 }
 
 func (u *StreamField) MarshalJSON() ([]byte, error) {
@@ -90,11 +92,14 @@ func (sf *StreamFields) ToJsonSchema() map[string]*JsonStreamField {
 }
 
 func convertSchema(sfs StreamFields) map[string]*JsonStreamField {
-	result := make(map[string]*JsonStreamField, len(sfs))
-	for _, sf := range sfs {
-		result[sf.Name] = convertFieldType(sf.FieldType)
+	if len(sfs) > 0 {
+		result := make(map[string]*JsonStreamField, len(sfs))
+		for _, sf := range sfs {
+			result[sf.Name] = convertFieldType(sf.FieldType)
+		}
+		return result
 	}
-	return result
+	return nil
 }
 
 func convertFieldType(sf FieldType) *JsonStreamField {
@@ -236,7 +241,11 @@ type Options struct {
 	// for delimited format only
 	DELIMITER string `json:"delimiter,omitempty"`
 
-	Schema map[string]*JsonStreamField `json:"-"`
+	RuleID       string                      `json:"-"`
+	Schema       map[string]*JsonStreamField `json:"-"`
+	IsWildCard   bool                        `json:"-"`
+	IsSchemaLess bool                        `json:"-"`
+	StreamName   string                      `json:"-"`
 }
 
 func (o Options) node() {}

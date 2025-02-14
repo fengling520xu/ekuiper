@@ -15,6 +15,7 @@
 package ast
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 )
@@ -26,6 +27,10 @@ type Node interface {
 type NameNode interface {
 	Node
 	GetName() string
+}
+
+type ValidateAbleExpr interface {
+	ValidateExpr() error
 }
 
 type Expr interface {
@@ -57,6 +62,17 @@ type ColonExpr struct {
 	End   Expr
 }
 
+func (c *ColonExpr) ValidateExpr() error {
+	if st, ok := c.Start.(*IntegerLiteral); ok {
+		if end, ok := c.End.(*IntegerLiteral); ok {
+			if st.Val >= 0 && end.Val >= 0 && st.Val >= end.Val {
+				return errors.New("colon start value can't be greater than end value")
+			}
+		}
+	}
+	return nil
+}
+
 type IndexExpr struct {
 	Index Expr
 }
@@ -70,7 +86,7 @@ type TimeLiteral struct {
 }
 
 type IntegerLiteral struct {
-	Val int
+	Val int64
 }
 
 type StringLiteral struct {
@@ -168,7 +184,7 @@ func (il *IntegerLiteral) expr()    {}
 func (il *IntegerLiteral) literal() {}
 func (il *IntegerLiteral) node()    {}
 func (il *IntegerLiteral) String() string {
-	return strconv.Itoa(il.Val)
+	return strconv.FormatInt(il.Val, 10)
 }
 
 func (nl *NumberLiteral) expr()    {}
@@ -194,6 +210,7 @@ const (
 	FuncTypeCols
 	FuncTypeSrf
 	FuncTypeWindow
+	FuncTypeTrigger
 )
 
 type Call struct {
@@ -208,6 +225,9 @@ type Call struct {
 	Cached      bool
 	Partition   *PartitionExpr
 	WhenExpr    Expr
+
+	// This is used for window functions.
+	SortFields SortFields
 }
 
 func (c *Call) expr()    {}
@@ -253,6 +273,16 @@ type BinaryExpr struct {
 	OP  Token
 	LHS Expr
 	RHS Expr
+}
+
+func (be *BinaryExpr) ValidateExpr() error {
+	switch be.OP {
+	case SUBSET:
+		if colon, ok := be.RHS.(*ColonExpr); ok {
+			return colon.ValidateExpr()
+		}
+	}
+	return nil
 }
 
 func (be *BinaryExpr) expr() {}

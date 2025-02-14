@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,9 +17,11 @@ package cast
 import (
 	"encoding/base64"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/mitchellh/mapstructure"
 )
@@ -30,6 +32,13 @@ const (
 	STRICT Strictness = iota
 	CONVERT_SAMEKIND
 	CONVERT_ALL
+)
+
+type ArrayNilConvert int8
+
+const (
+	IGNORE_NIL ArrayNilConvert = iota
+	FORCE_CONVERT
 )
 
 /*********** Type Cast Utilities *****/
@@ -85,6 +94,8 @@ func ToString(input interface{}, sn Strictness) (string, error) {
 				return s.String(), nil
 			case error:
 				return s.Error(), nil
+			default:
+				return ToStringAlways(input), nil
 			}
 		}
 	}
@@ -177,6 +188,9 @@ func ToInt8(input interface{}, sn Strictness) (int8, error) {
 		if sn == CONVERT_ALL {
 			v, err := strconv.ParseInt(s, 0, 0)
 			if err == nil {
+				if v > math.MaxInt8 {
+					return 0, fmt.Errorf("value %d is out of int8 range", v)
+				}
 				return int8(v), nil
 			}
 		}
@@ -229,6 +243,9 @@ func ToInt16(input interface{}, sn Strictness) (int16, error) {
 		if sn == CONVERT_ALL {
 			v, err := strconv.ParseInt(s, 0, 0)
 			if err == nil {
+				if v > math.MaxInt16 {
+					return 0, fmt.Errorf("value %d is out of int32 range", v)
+				}
 				return int16(v), nil
 			}
 		}
@@ -281,6 +298,9 @@ func ToInt32(input interface{}, sn Strictness) (int32, error) {
 		if sn == CONVERT_ALL {
 			v, err := strconv.ParseInt(s, 0, 0)
 			if err == nil {
+				if v > math.MaxInt32 {
+					return 0, fmt.Errorf("value %d is out of int32 range", v)
+				}
 				return int32(v), nil
 			}
 		}
@@ -411,7 +431,12 @@ func ToFloat64(input interface{}, sn Strictness) (float64, error) {
 			}
 			return 0, nil
 		}
+	case nil:
+		if sn == CONVERT_ALL {
+			return 0, nil
+		}
 	}
+
 	return 0, fmt.Errorf("cannot convert %[1]T(%[1]v) to float64", input)
 }
 
@@ -473,6 +498,10 @@ func ToFloat32(input interface{}, sn Strictness) (float32, error) {
 			if s {
 				return 1, nil
 			}
+			return 0, nil
+		}
+	case nil:
+		if sn == CONVERT_ALL {
 			return 0, nil
 		}
 	}
@@ -558,6 +587,9 @@ func ToUint8(i interface{}, sn Strictness) (uint8, error) {
 		if sn == CONVERT_ALL {
 			v, err := strconv.ParseUint(s, 0, 64)
 			if err == nil {
+				if v > math.MaxUint8 {
+					return 0, fmt.Errorf("value %d is out of uint16 range", v)
+				}
 				return uint8(v), nil
 			}
 		}
@@ -631,6 +663,9 @@ func ToUint16(i interface{}, sn Strictness) (uint16, error) {
 		if sn == CONVERT_ALL {
 			v, err := strconv.ParseUint(s, 0, 64)
 			if err == nil {
+				if v > math.MaxUint16 {
+					return 0, fmt.Errorf("value %d is out of uint16 range", v)
+				}
 				return uint16(v), nil
 			}
 		}
@@ -814,14 +849,18 @@ func ToBytes(input interface{}, sn Strictness) ([]byte, error) {
 }
 
 // ToByteA converts to eKuiper internal byte array
-func ToByteA(input interface{}, _ Strictness) ([]byte, error) {
+func ToByteA(input interface{}, sn Strictness) ([]byte, error) {
 	switch b := input.(type) {
 	case []byte:
 		return b, nil
 	case string:
 		r, err := base64.StdEncoding.DecodeString(b)
 		if err != nil {
-			return nil, fmt.Errorf("illegal string %s, must be base64 encoded string", b)
+			if sn != STRICT {
+				r = []byte(b)
+			} else {
+				return nil, fmt.Errorf("illegal string %s, must be base64 encoded string", b)
+			}
 		}
 		return r, nil
 	}
@@ -905,14 +944,19 @@ func ToUint64Slice(input interface{}, sn Strictness) ([]uint64, error) {
 	return result, nil
 }
 
-func ToFloat64Slice(input interface{}, sn Strictness) ([]float64, error) {
+func ToFloat64Slice(input interface{}, sn Strictness, anc ArrayNilConvert) ([]float64, error) {
 	s := reflect.ValueOf(input)
 	if s.Kind() != reflect.Slice {
 		return nil, fmt.Errorf("cannot convert %[1]T(%[1]v) to float slice)", input)
 	}
 	var result []float64
 	for i := 0; i < s.Len(); i++ {
-		ele, err := ToFloat64(s.Index(i).Interface(), sn)
+		v := s.Index(i).Interface()
+		if anc == IGNORE_NIL && v == nil {
+			continue
+		}
+
+		ele, err := ToFloat64(v, sn)
 		if err != nil {
 			return nil, fmt.Errorf("cannot convert %[1]T(%[1]v) to float slice for the %d element: %v", input, i, err)
 		}
@@ -992,8 +1036,9 @@ func ToBytesSlice(input interface{}, sn Strictness) ([][]byte, error) {
  */
 func MapToStruct(input, output interface{}) error {
 	config := &mapstructure.DecoderConfig{
-		TagName: "json",
-		Result:  output,
+		TagName:    "json",
+		Result:     output,
+		DecodeHook: ToTimeDurationHookFunc(),
 	}
 	decoder, err := mapstructure.NewDecoder(config)
 	if err != nil {
@@ -1001,6 +1046,28 @@ func MapToStruct(input, output interface{}) error {
 	}
 
 	return decoder.Decode(input)
+}
+
+func ToTimeDurationHookFunc() mapstructure.DecodeHookFunc {
+	return func(
+		f reflect.Type,
+		t reflect.Type,
+		data any,
+	) (any, error) {
+		if t != reflect.TypeOf(time.Duration(5)) && t != reflect.TypeOf(DurationConf(time.Duration(5))) {
+			return data, nil
+		}
+		switch f.Kind() {
+		case reflect.String:
+			return time.ParseDuration(data.(string))
+		case reflect.Int:
+			return time.Duration(data.(int)) * time.Millisecond, nil
+		case reflect.Float64:
+			return time.Duration(data.(float64)) * time.Millisecond, nil
+		default:
+			return data, nil
+		}
+	}
 }
 
 // MapToStructStrict

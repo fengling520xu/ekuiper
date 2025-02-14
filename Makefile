@@ -1,11 +1,14 @@
 BUILD_PATH ?= _build
 PACKAGES_PATH ?= _packages
 
-VERSION := $(shell git describe --tags --always)
+VERSION := $(shell git describe --tags --always --match 'v[0-9]*.[0-9]*.[0-9]*' | sed 's/^v//g')
 ARCH := $(shell go env GOARCH)
 OS := $(shell go env GOOS)
 PACKAGE_NAME := kuiper-$(VERSION)-$(OS)-$(ARCH)
 GO              := GO111MODULE=on go
+
+FAILPOINT_ENABLE  := find $$PWD/ -type d | grep -vE "(\.git|tools)" | xargs tools/failpoint/bin/failpoint-ctl enable
+FAILPOINT_DISABLE := find $$PWD/ -type d | grep -vE "(\.git|tools)" | xargs tools/failpoint/bin/failpoint-ctl disable
 
 TARGET ?= lfedge/ekuiper
 
@@ -39,8 +42,8 @@ build_prepare:
 
 .PHONY: build_without_edgex
 build_without_edgex: build_prepare
-	GO111MODULE=on CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.Version=$(VERSION) -X main.LoadFileType=relative" -o kuiper cmd/kuiper/main.go
-	GO111MODULE=on CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X main.Version=$(VERSION) -X main.LoadFileType=relative" -o kuiperd cmd/kuiperd/main.go
+	GO111MODULE=on CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X github.com/lf-edge/ekuiper/v2/cmd.Version=$(VERSION) -X github.com/lf-edge/ekuiper/v2/cmd.LoadFileType=relative" -o kuiper cmd/kuiper/main.go
+	GO111MODULE=on CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X github.com/lf-edge/ekuiper/v2/cmd.Version=$(VERSION) -X github.com/lf-edge/ekuiper/v2/cmd.LoadFileType=relative" -o kuiperd cmd/kuiperd/main.go
 	@if [ "$$(uname -s)" = "Linux" ] && [ ! -z $$(which upx) ]; then upx ./kuiper; upx ./kuiperd; fi
 	@mv ./kuiper ./kuiperd $(BUILD_PATH)/$(PACKAGE_NAME)/bin
 	@echo "Build successfully"
@@ -51,16 +54,24 @@ pkg_without_edgex: build_without_edgex
 
 .PHONY: build_with_edgex
 build_with_edgex: build_prepare
-	GO111MODULE=on CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.Version=$(VERSION) -X main.LoadFileType=relative" -tags "edgex include_nats_messaging" -o kuiper cmd/kuiper/main.go
-	GO111MODULE=on CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X main.Version=$(VERSION) -X main.LoadFileType=relative" -tags "edgex include_nats_messaging" -o kuiperd cmd/kuiperd/main.go
+	GO111MODULE=on CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X github.com/lf-edge/ekuiper/v2/cmd.Version=$(VERSION) -X github.com/lf-edge/ekuiper/v2/cmd.LoadFileType=relative" -tags "edgex include_nats_messaging" -o kuiper cmd/kuiper/main.go
+	GO111MODULE=on CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X github.com/lf-edge/ekuiper/v2/cmd.Version=$(VERSION) -X github.com/lf-edge/ekuiper/v2/cmd.LoadFileType=relative" -tags "edgex include_nats_messaging" -o kuiperd cmd/kuiperd/main.go
 	@if [ "$$(uname -s)" = "Linux" ] && [ ! -z $$(which upx) ]; then upx ./kuiper; upx ./kuiperd; fi
 	@mv ./kuiper ./kuiperd $(BUILD_PATH)/$(PACKAGE_NAME)/bin
 	@echo "Build successfully"
 
 .PHONY: build_with_edgex_and_script
 build_with_edgex_and_script: build_prepare
-	GO111MODULE=on CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.Version=$(VERSION) -X main.LoadFileType=relative" -tags "edgex include_nats_messaging" -o kuiper cmd/kuiper/main.go
-	GO111MODULE=on CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X main.Version=$(VERSION) -X main.LoadFileType=relative" -tags "edgex include_nats_messaging script" -o kuiperd cmd/kuiperd/main.go
+	GO111MODULE=on CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X github.com/lf-edge/ekuiper/v2/cmd.Version=$(VERSION) -X github.com/lf-edge/ekuiper/v2/cmd.LoadFileType=relative" -tags "edgex include_nats_messaging" -o kuiper cmd/kuiper/main.go
+	GO111MODULE=on CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X github.com/lf-edge/ekuiper/v2/cmd.Version=$(VERSION) -X github.com/lf-edge/ekuiper/v2/cmd.LoadFileType=relative" -tags "edgex include_nats_messaging script" -o kuiperd cmd/kuiperd/main.go
+	@if [ "$$(uname -s)" = "Linux" ] && [ ! -z $$(which upx) ]; then upx ./kuiper; upx ./kuiperd; fi
+	@mv ./kuiper ./kuiperd $(BUILD_PATH)/$(PACKAGE_NAME)/bin
+	@echo "Build successfully"
+
+.PHONY: build_with_cover
+build_with_cover: build_prepare
+	GO111MODULE=on CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X github.com/lf-edge/ekuiper/v2/cmd.Version=$(VERSION) -X github.com/lf-edge/ekuiper/v2/cmd.LoadFileType=relative" -tags "edgex include_nats_messaging" -o kuiper cmd/kuiper/main.go
+	GO111MODULE=on CGO_ENABLED=1 go build -trimpath --cover -covermode=atomic -coverpkg=./... -ldflags="-s -w -X github.com/lf-edge/ekuiper/v2/cmd.Version=$(VERSION) -X github.com/lf-edge/ekuiper/v2/cmd.LoadFileType=relative" -tags "full edgex include_nats_messaging" -o kuiperd cmd/kuiperd/main.go
 	@if [ "$$(uname -s)" = "Linux" ] && [ ! -z $$(which upx) ]; then upx ./kuiper; upx ./kuiperd; fi
 	@mv ./kuiper ./kuiperd $(BUILD_PATH)/$(PACKAGE_NAME)/bin
 	@echo "Build successfully"
@@ -69,9 +80,21 @@ build_with_edgex_and_script: build_prepare
 pkg_with_edgex: build_with_edgex
 	@make real_pkg
 
+.PHONY: build_with_fdb
+build_with_fdb: build_prepare
+	GO111MODULE=on CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X github.com/lf-edge/ekuiper/v2/cmd.Version=$(VERSION) -X github.com/lf-edge/ekuiper/v2/cmd.LoadFileType=relative" -tags "fdb" -o kuiper cmd/kuiper/main.go
+	GO111MODULE=on CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X github.com/lf-edge/ekuiper/v2/cmd.Version=$(VERSION) -X github.com/lf-edge/ekuiper/v2/cmd.LoadFileType=relative" -tags "fdb" -o kuiperd cmd/kuiperd/main.go
+	@if [ "$$(uname -s)" = "Linux" ] && [ ! -z $$(which upx) ]; then upx ./kuiper; upx ./kuiperd; fi
+	@mv ./kuiper ./kuiperd $(BUILD_PATH)/$(PACKAGE_NAME)/bin
+	@echo "Build successfully"
+
+.PHONY: pkg_with_fdb
+pkg_with_fdb: build_with_fdb
+	@make real_pkg
+
 .PHONY: build_core
 build_core: build_prepare
-	GO111MODULE=on CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.Version=$(VERSION) -X main.LoadFileType=relative" -tags core -o kuiperd cmd/kuiperd/main.go
+	GO111MODULE=on CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X github.com/lf-edge/ekuiper/v2/cmd.Version=$(VERSION) -X github.com/lf-edge/ekuiper/v2/cmd.LoadFileType=relative" -tags core -o kuiperd cmd/kuiperd/main.go
 	@if [ "$$(uname -s)" = "Linux" ] && [ ! -z $$(which upx) ]; then upx ./kuiperd; fi
 	@mv ./kuiperd $(BUILD_PATH)/$(PACKAGE_NAME)/bin
 	@echo "Build successfully"
@@ -82,15 +105,18 @@ PLUGINS_IN_FULL := \
 	extensions/sinks/kafka \
 	extensions/sinks/image \
 	extensions/sinks/sql   \
+	extensions/sinks/zmq \
 	extensions/sources/random \
 	extensions/sources/sql \
-	extensions/sources/video
+	extensions/sources/video \
+	extensions/sources/zmq \
+	extensions/sources/kafka
 
 .PHONY: build_full
 build_full: SHELL:=/bin/bash -euo pipefail
 build_full: build_prepare
-	GO111MODULE=on CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.Version=$(VERSION) -X main.LoadFileType=relative" -o kuiper cmd/kuiper/main.go
-	GO111MODULE=on CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X main.Version=$(VERSION) -X main.LoadFileType=relative" -tags "full include_nats_messaging" -o kuiperd cmd/kuiperd/main.go
+	GO111MODULE=on CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X github.com/lf-edge/ekuiper/v2/cmd.Version=$(VERSION) -X github.com/lf-edge/ekuiper/v2/cmd.LoadFileType=relative" -o kuiper cmd/kuiper/main.go
+	GO111MODULE=on CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X github.com/lf-edge/ekuiper/v2/cmd.Version=$(VERSION) -X github.com/lf-edge/ekuiper/v2/cmd.LoadFileType=relative" -tags "full include_nats_messaging" -o kuiperd cmd/kuiperd/main.go
 	@if [ "$$(uname -s)" = "Linux" ] && [ ! -z $$(which upx) ]; then upx ./kuiper; upx ./kuiperd; fi
 	@mv ./kuiper ./kuiperd $(BUILD_PATH)/$(PACKAGE_NAME)/bin
 	@while read plugin; do \
@@ -125,20 +151,13 @@ real_pkg:
 	@mv $(BUILD_PATH)/$(PACKAGE_NAME).zip $(BUILD_PATH)/$(PACKAGE_NAME).tar.gz $(PACKAGES_PATH)
 	@echo "Package build success"
 
-.PHONY: build_with_wasm
-build_with_wasm: build_prepare
-	GO111MODULE=on CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.Version=$(VERSION) -X main.LoadFileType=relative" -o kuiper cmd/kuiper/main.go
-	GO111MODULE=on CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X main.Version=$(VERSION) -X main.LoadFileType=relative" -tags "wasmedge" -o kuiperd cmd/kuiperd/main.go
-	@if [ "$$(uname -s)" = "Linux" ] && [ ! -z $$(which upx) ]; then upx ./kuiper; upx ./kuiperd; fi
-	@mv ./kuiper ./kuiperd $(BUILD_PATH)/$(PACKAGE_NAME)/bin
-	@echo "Build successfully"
-
-
 .PHONY: docker
 docker:
 	docker buildx build --no-cache --platform=linux/amd64 -t $(TARGET):$(VERSION) -f deploy/docker/Dockerfile . --load
 	docker buildx build --no-cache --platform=linux/amd64 -t $(TARGET):$(VERSION)-slim -f deploy/docker/Dockerfile-slim . --load
+	docker buildx build --no-cache --platform=linux/amd64 -t $(TARGET):$(VERSION)-full -f deploy/docker/Dockerfile-full . --load
 	docker buildx build --no-cache --platform=linux/amd64 -t $(TARGET):$(VERSION)-dev -f deploy/docker/Dockerfile-dev . --load
+	docker buildx build --no-cache --platform=linux/amd64 -t $(TARGET):$(VERSION)-alpine-python -f deploy/docker/Dockerfile-alpine-python . --load
 
 PLUGINS := sinks/influx \
 	sinks/influx2 \
@@ -150,6 +169,7 @@ PLUGINS := sinks/influx \
 	sources/zmq \
 	sources/sql \
 	sources/video \
+	sources/kafka \
 	sinks/tdengine \
 	functions/accumulateWordCount \
 	functions/countPlusOne \
@@ -157,7 +177,8 @@ PLUGINS := sinks/influx \
 	functions/geohash \
 	functions/echo \
 	functions/labelImage \
-	functions/tfLite
+	functions/tfLite \
+	functions/onnx
 
 .PHONY: plugins $(PLUGINS)
 plugins: $(PLUGINS)
@@ -179,7 +200,17 @@ tidy:
 lint:tools/lint/bin/golangci-lint
 	@echo "linting"
 	tools/lint/bin/golangci-lint run ./... ./extensions/... ./tools/kubernetes/...
-	cd sdk/go && ../../tools/lint/bin/golangci-lint run
 
 tools/lint/bin/golangci-lint:
 	GOBIN=$(shell pwd)/tools/lint/bin go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+tools/failpoint/bin/failpoint-ctl:
+	GOBIN=$(shell pwd)/tools/failpoint/bin $(GO) install github.com/pingcap/failpoint/failpoint-ctl@2eaa328
+
+failpoint-enable: tools/failpoint/bin/failpoint-ctl
+# Converting gofail failpoints...
+	@$(FAILPOINT_ENABLE)
+
+failpoint-disable: tools/failpoint/bin/failpoint-ctl
+# Restoring gofail failpoints...
+	@$(FAILPOINT_DISABLE)

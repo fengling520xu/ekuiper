@@ -1,4 +1,4 @@
-// Copyright 2021 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,19 +17,19 @@ package main
 import (
 	"fmt"
 
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
 )
 
 type countPlusOneFunc struct{}
 
-func (f *countPlusOneFunc) Validate(args []interface{}) error {
+func (f *countPlusOneFunc) Validate(args []any) error {
 	if len(args) != 1 {
 		return fmt.Errorf("countPlusOne function only supports 1 parameter but got %d", len(args))
 	}
 	return nil
 }
 
-func (f *countPlusOneFunc) Exec(args []interface{}, _ api.FunctionContext) (interface{}, bool) {
+func (f *countPlusOneFunc) Exec(_ api.FunctionContext, args []any) (any, bool) {
 	arg, ok := args[0].([]interface{})
 	if !ok {
 		return fmt.Errorf("arg is not a slice, got %v", args[0]), false

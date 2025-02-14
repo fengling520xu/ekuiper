@@ -1,4 +1,4 @@
-// Copyright 2021-2022 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,30 +14,38 @@
 
 package message
 
+import (
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+)
+
 const (
-	FormatBinary    = "binary"
-	FormatJson      = "json"
-	FormatProtobuf  = "protobuf"
-	FormatDelimited = "delimited"
-	FormatCustom    = "custom"
+	FormatBinary     = "binary"
+	FormatJson       = "json"
+	FormatProtobuf   = "protobuf"
+	FormatDelimited  = "delimited"
+	FormatUrlEncoded = "urlencoded"
+	FormatXML        = "xml"
+	FormatCustom     = "custom"
 
 	DefaultField = "self"
 	MetaKey      = "__meta"
 )
 
-func IsFormatSupported(format string) bool {
-	switch format {
-	case FormatBinary, FormatJson, FormatProtobuf, FormatCustom, FormatDelimited:
-		return true
-	default:
-		return false
-	}
-}
-
 // Converter converts bytes & map or []map according to the schema
 type Converter interface {
-	Encode(d interface{}) ([]byte, error)
-	Decode(b []byte) (interface{}, error)
+	Encode(ctx api.StreamContext, d any) ([]byte, error)
+	Decode(ctx api.StreamContext, b []byte) (any, error)
+}
+
+// PartialDecoder decodes a field partially
+type PartialDecoder interface {
+	DecodeField(ctx api.StreamContext, b []byte, f string) (any, error)
+}
+
+type SchemaResetAbleConverter interface {
+	ResetSchema(schema map[string]*ast.JsonStreamField)
 }
 
 type ColumnSetter interface {
@@ -55,4 +63,9 @@ type Compressor interface {
 
 type Decompressor interface {
 	Decompress([]byte) ([]byte, error)
+}
+
+// Encryptor encrypts bytes
+type Encryptor interface {
+	Encrypt([]byte) ([]byte, error)
 }

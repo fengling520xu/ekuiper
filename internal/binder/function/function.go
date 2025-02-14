@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,9 +17,12 @@ package function
 import (
 	"strings"
 
-	"github.com/lf-edge/ekuiper/internal/plugin"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/binder"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/modules"
 )
 
 type (
@@ -38,12 +41,15 @@ type builtinFunc struct {
 var (
 	builtins            map[string]builtinFunc
 	builtinStatfulFuncs map[string]func() api.Function
+	kvPairKName         = "key"
+	kvPairVName         = "value"
 )
 
 func init() {
 	builtins = make(map[string]builtinFunc)
 	builtinStatfulFuncs = make(map[string]func() api.Function)
 	registerAggFunc()
+	registerIncAggFunc()
 	registerMathFunc()
 	registerStrFunc()
 	registerMiscFunc()
@@ -103,11 +109,11 @@ func (m *Manager) Function(name string) (api.Function, error) {
 	if ok {
 		return ff(), nil
 	}
+	ff, ok = modules.Functions[name]
+	if ok {
+		return ff(), nil
+	}
 	return nil, nil
-}
-
-func (m *Manager) HasFunctionSet(name string) bool {
-	return name == "internal"
 }
 
 func (m *Manager) FunctionPluginInfo(funcName string) (plugin.EXTENSION_TYPE, string, string) {
@@ -119,6 +125,10 @@ func (m *Manager) FunctionPluginInfo(funcName string) (plugin.EXTENSION_TYPE, st
 	}
 }
 
+func (m *Manager) HasFunctionSet(name string) bool {
+	return name == "internal"
+}
+
 func (m *Manager) ConvName(n string) (string, bool) {
 	name := strings.ToLower(n)
 	_, ok := builtins[name]
@@ -126,10 +136,17 @@ func (m *Manager) ConvName(n string) (string, bool) {
 		return name, true
 	}
 	_, ok = builtinStatfulFuncs[name]
+	if ok {
+		return name, true
+	}
+	_, ok = modules.Functions[name]
 	return name, ok
 }
 
-var m = &Manager{}
+var (
+	m                    = &Manager{}
+	_ binder.FuncFactory = m
+)
 
 func GetManager() *Manager {
 	return m

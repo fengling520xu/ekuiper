@@ -41,6 +41,8 @@ demo_conf: #Conf_key
   server: "tcp://10.211.55.6:1883"
 ```
 
+你可以通过 api 的方式提前检查对应 sink 端点的连通性: [连通性检查](../../../api/restapi/connection.md#连通性检查)
+
 ## 全局配置
 
 用户可在 `default` 部分指定全局设置。
@@ -61,6 +63,9 @@ demo_conf: #Conf_key
   - 如果运行从`/var/kuiper/bin`中运行`./kuiperd`，那么父目录为 `/var/kuiper/bin`。
 - `privateKeyPath`：私钥路径，示例值：`d3807d9fa5-private.pem.key`。可以是绝对路径，也可以是相对路径，具体可参考 `certificationPath`。
 - `rootCaPath`：根证书路径。可以是绝对路径，也可以是相对路径。
+- `certificationRaw`: 经过 base64 编码过的证书原文, 如果同时定义了 `certificationPath` 将会先用该参数。
+- `privateKeyRaw`: 经过 base64 编码过的密钥原文， 如果同时定义了 `privateKeyPath` 将会先用该参数。
+- `rootCARaw`: 经过 base64 编码过的根证书原文， 如果同时定义了 `rootCaPath` 将会先用该参数。
 - `insecureSkipVerify`：是否跳过证书验证。如设置为 `true`，TLS 接受服务器提供的任何证书以及该证书中的任何主机名。注意：此时，TLS 容易受到中间人攻击。默认值：`false`。
 
 ### 连接重用

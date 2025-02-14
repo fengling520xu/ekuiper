@@ -10,6 +10,8 @@ This [repository](https://github.com/lf-edge/ekuiper/tree/master/extensions/sqld
 This plugin supports `sqlserver\postgres\mysql\sqlite3\oracle` drivers by default. User can compile plugin that only support one driver by himself,
 for example, if he only wants mysql, then he can build with build tag `mysql`.
 
+When using `sqlserver` as the target, you need to confirm that the `sqlserver` exposes port 1434.
+
 ### Default build command
 
 ```shell
@@ -37,6 +39,8 @@ for example, if he only wants mysql, then he can build with build tag `mysql`.
 | rowkindField   | true     | Specify which field represents the action like insert or update. If not specified, all rows are default to insert.                                            |
 
 Other common sink properties are supported. Please refer to the [sink common properties](../overview.md#common-properties) for more information.
+
+You can check the connectivity of the corresponding sink endpoint in advance through the API: [Connectivity Check](../../../api/restapi/connection.md#connectivity-check)
 
 ## Sample usage
 

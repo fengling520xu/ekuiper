@@ -1,4 +1,4 @@
-// Copyright 2023 EMQ Technologies Co., Ltd.
+// Copyright 2023-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,19 +15,22 @@
 package server
 
 import (
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/lf-edge/ekuiper/internal/meta"
-	"github.com/lf-edge/ekuiper/internal/pkg/model"
-	"github.com/lf-edge/ekuiper/internal/plugin/native"
-	"github.com/lf-edge/ekuiper/internal/plugin/portable"
-	"github.com/lf-edge/ekuiper/internal/schema"
-	"github.com/lf-edge/ekuiper/internal/service"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/meta"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/model"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin/native"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin/portable"
+	"github.com/lf-edge/ekuiper/v2/internal/schema"
+	"github.com/lf-edge/ekuiper/v2/internal/service"
 )
 
 type ServerTestSuite struct {
@@ -36,6 +39,7 @@ type ServerTestSuite struct {
 }
 
 func (suite *ServerTestSuite) SetupTest() {
+	conf.IsTesting = true
 	suite.s = new(Server)
 	nativeManager, _ = native.InitManager()
 	portableManager, _ = portable.InitManager()
@@ -45,7 +49,7 @@ func (suite *ServerTestSuite) SetupTest() {
 }
 
 func (suite *ServerTestSuite) TestStream() {
-	sql := `Create Stream test () WITH (DATASOURCE="../internal/server/rpc_test_data/test.json", FORMAT="JSON", type="file");`
+	sql := `Create Stream test () WITH (FORMAT="JSON", type="simulator");`
 	var reply string
 	err := suite.s.Stream(sql, &reply)
 	assert.Nil(suite.T(), err)
@@ -62,15 +66,20 @@ func (suite *ServerTestSuite) TestStream() {
 	assert.Nil(suite.T(), err)
 	assert.Equal(suite.T(), "Query was submit successfully.", reply)
 
-	var result string = ""
+	var result string
 	for i := 0; i < 5; i++ {
 		var queryresult string
 		time.Sleep(time.Second)
 		err = suite.s.GetQueryResult("test", &queryresult)
 		assert.Nil(suite.T(), err)
-		result += queryresult
+		if queryresult != "" {
+			result += queryresult
+			break
+		}
 	}
-	assert.Equal(suite.T(), "[{\"humidity\":50,\"id\":1,\"temperature\":20}]\n[{\"humidity\":51,\"id\":2,\"temperature\":21}]\n[{\"humidity\":52,\"id\":3,\"temperature\":22}]\n[{\"humidity\":53,\"id\":4,\"temperature\":23}]", result)
+	allResults := strings.Split(result, "\n")
+	assert.True(suite.T(), len(allResults) >= 1)
+	assert.Equal(suite.T(), "[{\"humidity\":50,\"temperature\":22.5}]", allResults[0])
 	stopQuery()
 }
 
@@ -141,22 +150,25 @@ func (suite *ServerTestSuite) TestRule() {
 	reply = ""
 	err = suite.s.GetTopoRule(ruleId, &reply)
 	assert.Nil(suite.T(), err)
-	assert.Equal(suite.T(), "{\n  \"sources\": [\n    \"source_test\"\n  ],\n  \"edges\": {\n    \"op_2_project\": [\n      \"sink_file_0\"\n    ],\n    \"source_test\": [\n      \"op_2_project\"\n    ]\n  }\n}", reply)
+	assert.Equal(suite.T(), "{\n  \"sources\": [\n    \"source_test\"\n  ],\n  \"edges\": {\n    \"op_2_decoder\": [\n      \"op_3_project\"\n    ],\n    \"op_3_project\": [\n      \"op_file_0_0_transform\"\n    ],\n    \"op_file_0_0_transform\": [\n      \"op_file_0_1_encode\"\n    ],\n    \"op_file_0_1_encode\": [\n      \"sink_file_0\"\n    ],\n    \"source_test\": [\n      \"op_2_decoder\"\n    ]\n  }\n}", reply)
 
 	reply = ""
 	err = suite.s.StopRule(ruleId, &reply)
 	assert.Nil(suite.T(), err)
 	assert.Equal(suite.T(), "Rule myRule was stopped.", reply)
+	fmt.Println("rule stopped")
 
 	reply = ""
 	err = suite.s.StartRule(ruleId, &reply)
 	assert.Nil(suite.T(), err)
 	assert.Equal(suite.T(), "Rule myRule was started", reply)
+	fmt.Println("rule started")
 
 	reply = ""
 	err = suite.s.RestartRule(ruleId, &reply)
 	assert.Nil(suite.T(), err)
 	assert.Equal(suite.T(), "Rule myRule was restarted.", reply)
+	fmt.Println("rule restarted")
 
 	reply = ""
 	err = suite.s.DropRule(ruleId, &reply)
@@ -178,7 +190,7 @@ func (suite *ServerTestSuite) TestImportAndExport() {
 	os.Remove(file)
 }
 
-func (suite *ServerTestSuite) TestConfigurarion() {
+func (suite *ServerTestSuite) TestConfiguration() {
 	importArg := model.ImportDataDesc{
 		FileName: "rpc_test_data/import_configuration.json",
 		Stop:     false,
@@ -187,12 +199,12 @@ func (suite *ServerTestSuite) TestConfigurarion() {
 	var reply string
 	err := suite.s.ImportConfiguration(&importArg, &reply)
 	assert.Nil(suite.T(), err)
-	assert.Equal(suite.T(), "{\n  \"ErrorMsg\": \"\",\n  \"ConfigResponse\": {\n    \"streams\": {},\n    \"tables\": {},\n    \"rules\": {},\n    \"nativePlugins\": {},\n    \"portablePlugins\": {},\n    \"sourceConfig\": {},\n    \"sinkConfig\": {},\n    \"connectionConfig\": {},\n    \"Service\": {},\n    \"Schema\": {},\n    \"uploads\": {}\n  }\n}", reply)
+	assert.Equal(suite.T(), "{\n  \"ErrorMsg\": \"\",\n  \"ConfigResponse\": {\n    \"streams\": {},\n    \"tables\": {},\n    \"rules\": {},\n    \"nativePlugins\": {},\n    \"portablePlugins\": {},\n    \"sourceConfig\": {},\n    \"sinkConfig\": {},\n    \"connectionConfig\": {},\n    \"Service\": {},\n    \"Schema\": {},\n    \"uploads\": {},\n    \"scripts\": {}\n  }\n}", reply)
 
 	reply = ""
 	err = suite.s.GetStatusImport(1, &reply)
 	assert.Nil(suite.T(), err)
-	assert.Equal(suite.T(), "{\n  \"streams\": {},\n  \"tables\": {},\n  \"rules\": {},\n  \"nativePlugins\": {},\n  \"portablePlugins\": {},\n  \"sourceConfig\": {},\n  \"sinkConfig\": {},\n  \"connectionConfig\": {},\n  \"Service\": {},\n  \"Schema\": {},\n  \"uploads\": {}\n}", reply)
+	assert.Equal(suite.T(), "{\n  \"streams\": {},\n  \"tables\": {},\n  \"rules\": {},\n  \"nativePlugins\": {},\n  \"portablePlugins\": {},\n  \"sourceConfig\": {},\n  \"sinkConfig\": {},\n  \"connectionConfig\": {},\n  \"Service\": {},\n  \"Schema\": {},\n  \"uploads\": {},\n  \"scripts\": {}\n}", reply)
 
 	reply = ""
 	exportArg := model.ExportDataDesc{

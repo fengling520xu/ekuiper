@@ -1,4 +1,4 @@
-// Copyright 2023-2023 EMQ Technologies Co., Ltd.
+// Copyright 2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,10 +15,9 @@
 package main
 
 import (
-	kafka "github.com/lf-edge/ekuiper/extensions/sinks/kafka/ext"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/extensions/impl/kafka"
 )
 
-func Kafka() api.Sink {
-	return kafka.GetSink()
-}
+func Kafka() api.Sink { return kafka.GetSink() }

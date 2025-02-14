@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,13 +15,10 @@
 package operator
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
-	"os"
-	"path"
 	"reflect"
 	"testing"
 	"time"
@@ -29,13 +26,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/converter"
-	"github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/cast"
-	"github.com/lf-edge/ekuiper/pkg/message"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/converter"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/topotest/mocknode"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/message"
 )
 
 func TestPreprocessor_Apply(t *testing.T) {
@@ -721,17 +719,6 @@ func TestPreprocessorTime_Apply(t *testing.T) {
 	}
 }
 
-func convertFields(o ast.StreamFields) []interface{} {
-	if o == nil {
-		return nil
-	}
-	fields := make([]interface{}, len(o))
-	for i := range o {
-		fields[i] = &o[i]
-	}
-	return fields
-}
-
 func TestPreprocessorEventtime_Apply(t *testing.T) {
 	err := cast.SetTimeZone("UTC")
 	require.NoError(t, err)
@@ -761,7 +748,7 @@ func TestPreprocessorEventtime_Apply(t *testing.T) {
 			result: &xsql.Tuple{
 				Message: xsql.Message{
 					"abc": int64(1568854515000),
-				}, Timestamp: 1568854515000,
+				}, Timestamp: cast.TimeFromUnixMilli(1568854515000),
 			},
 		},
 		{ // 1
@@ -782,7 +769,7 @@ func TestPreprocessorEventtime_Apply(t *testing.T) {
 			result: &xsql.Tuple{
 				Message: xsql.Message{
 					"abc": float64(1568854515000),
-				}, Timestamp: 1568854515000,
+				}, Timestamp: cast.TimeFromUnixMilli(1568854515000),
 			},
 		},
 		{ // 2
@@ -817,7 +804,7 @@ func TestPreprocessorEventtime_Apply(t *testing.T) {
 					"abc": float64(34),
 					"def": "2019-09-23T02:47:29.754Z",
 					"ghi": float64(50),
-				}, Timestamp: int64(1569206849754),
+				}, Timestamp: cast.TimeFromUnixMilli(1569206849754),
 			},
 		},
 		{ // 4
@@ -837,7 +824,7 @@ func TestPreprocessorEventtime_Apply(t *testing.T) {
 				Message: xsql.Message{
 					"abc": cast.TimeFromUnixMilli(1568854515000),
 					"def": cast.TimeFromUnixMilli(1568854573431),
-				}, Timestamp: int64(1568854515000),
+				}, Timestamp: cast.TimeFromUnixMilli(1568854515000),
 			},
 		},
 		{ // 5
@@ -859,7 +846,7 @@ func TestPreprocessorEventtime_Apply(t *testing.T) {
 					"abc": float64(34),
 					"def": "2019-09-23AT02:47:29",
 					"ghi": float64(50),
-				}, Timestamp: int64(1569206849000),
+				}, Timestamp: cast.TimeFromUnixMilli(1569206849000),
 			},
 		},
 		{ // 6
@@ -886,36 +873,34 @@ func TestPreprocessorEventtime_Apply(t *testing.T) {
 	contextLogger := conf.Log.WithField("rule", "TestPreprocessorEventtime_Apply")
 	ctx := context.WithValue(context.Background(), context.LoggerKey, contextLogger)
 	for i, tt := range tests {
+		t.Run(fmt.Sprintf("test_%d", i), func(t *testing.T) {
+			pp := &Preprocessor{
+				checkSchema: true,
+				defaultFieldProcessor: defaultFieldProcessor{
+					streamFields:    tt.stmt.StreamFields.ToJsonSchema(),
+					timestampFormat: tt.stmt.Options.TIMESTAMP_FORMAT,
+				},
+				isEventTime:    true,
+				timestampField: tt.stmt.Options.TIMESTAMP,
+			}
 
-		pp := &Preprocessor{
-			checkSchema: true,
-			defaultFieldProcessor: defaultFieldProcessor{
-				streamFields:    tt.stmt.StreamFields.ToJsonSchema(),
-				timestampFormat: tt.stmt.Options.TIMESTAMP_FORMAT,
-			},
-			isEventTime:    true,
-			timestampField: tt.stmt.Options.TIMESTAMP,
-		}
-
-		dm := make(map[string]interface{})
-		if e := json.Unmarshal(tt.data, &dm); e != nil {
-			log.Fatal(e)
-			return
-		} else {
-			tuple := &xsql.Tuple{Message: dm}
-			fv, afv := xsql.NewFunctionValuersForOp(nil)
-			result := pp.Apply(ctx, tuple, fv, afv)
-			// workaround make sure all the timezone are the same for time vars or the DeepEqual will be false.
-			if rt, ok := result.(*xsql.Tuple); ok {
-				if rtt, ok := rt.Message["abc"].(time.Time); ok {
-					rt.Message["abc"] = rtt.UTC()
+			dm := make(map[string]interface{})
+			if e := json.Unmarshal(tt.data, &dm); e != nil {
+				log.Fatal(e)
+				return
+			} else {
+				tuple := &xsql.Tuple{Message: dm}
+				fv, afv := xsql.NewFunctionValuersForOp(nil)
+				result := pp.Apply(ctx, tuple, fv, afv)
+				// workaround make sure all the timezone are the same for time vars or the DeepEqual will be false.
+				if rt, ok := result.(*xsql.Tuple); ok {
+					if rtt, ok := rt.Message["abc"].(time.Time); ok {
+						rt.Message["abc"] = rtt.UTC()
+					}
 				}
+				assert.Equal(t, tt.result, result)
 			}
-			if !reflect.DeepEqual(tt.result, result) {
-				t.Errorf("%d. %q\n\nresult mismatch:\n\nexp=%#v\n\ngot=%#v\n\n", i, tuple, tt.result, result)
-			}
-		}
-
+		})
 	}
 }
 
@@ -993,15 +978,7 @@ func TestPreprocessorError(t *testing.T) {
 }
 
 func TestPreprocessorForBinary(t *testing.T) {
-	docsFolder, err := conf.GetLoc("docs/")
-	if err != nil {
-		t.Errorf("Cannot find docs folder: %v", err)
-	}
-	image, err := os.ReadFile(path.Join(docsFolder, "cover.jpg"))
-	if err != nil {
-		t.Errorf("Cannot read image: %v", err)
-	}
-	b64img := base64.StdEncoding.EncodeToString(image)
+	image, b64img := mocknode.GetImg()
 	tests := []struct {
 		stmt   *ast.StreamStmt
 		data   []byte
@@ -1079,13 +1056,13 @@ func TestPreprocessorForBinary(t *testing.T) {
 		pp := &Preprocessor{checkSchema: true}
 		pp.streamFields = tt.stmt.StreamFields.ToJsonSchema()
 		format := message.FormatJson
-		ccc, _ := converter.GetOrCreateConverter(&ast.Options{FORMAT: format})
-		nCtx := context.WithValue(ctx, context.DecodeKey, ccc)
-		if dm, e := nCtx.Decode(tt.data); e != nil {
+		ccc, _ := converter.GetOrCreateConverter(ctx, format, "", nil, nil)
+		if dm, e := ccc.Decode(ctx, tt.data); e != nil {
 			log.Fatal(e)
 			return
 		} else {
-			tuple := &xsql.Tuple{Message: dm}
+			dmm := dm.(map[string]any)
+			tuple := &xsql.Tuple{Message: xsql.Message(dmm)}
 			fv, afv := xsql.NewFunctionValuersForOp(nil)
 			result := pp.Apply(ctx, tuple, fv, afv)
 			if !reflect.DeepEqual(tt.result, result) {

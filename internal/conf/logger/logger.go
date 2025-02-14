@@ -1,4 +1,4 @@
-// Copyright 2023 EMQ Technologies Co., Ltd.
+// Copyright 2023-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 package logger
 
 import (
+	"io"
 	"os"
 	"strings"
 
@@ -39,14 +40,14 @@ func InitLogger() {
 		return
 	}
 	Log = logrus.New()
+	Log.SetOutput(io.Discard)
 	filenameHook := filename.NewHook()
 	filenameHook.Field = "file"
 	Log.AddHook(filenameHook)
 
 	Log.SetFormatter(&logrus.TextFormatter{
-		TimestampFormat: "2006-01-02 15:04:05",
-		DisableColors:   true,
-		FullTimestamp:   true,
+		DisableColors: true,
+		FullTimestamp: true,
 	})
 	Log.Debugf("init with args %s", os.Args)
 	for _, arg := range os.Args {

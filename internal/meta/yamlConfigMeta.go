@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,14 +17,18 @@ package meta
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strings"
 	"sync"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/pkg/store"
-	"github.com/lf-edge/ekuiper/pkg/cast"
-	"github.com/lf-edge/ekuiper/pkg/kv"
+	"github.com/lf-edge/ekuiper/v2/internal/binder/io"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/store"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/util"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/connection"
+	"github.com/lf-edge/ekuiper/v2/pkg/errorx"
+	"github.com/lf-edge/ekuiper/v2/pkg/kv"
+	"github.com/lf-edge/ekuiper/v2/pkg/replace"
 )
 
 type configManager struct {
@@ -57,7 +61,6 @@ const (
 	SinkCfgOperatorKeyPrefix         = "sinks."
 	ConnectionCfgOperatorKeyTemplate = "connections.%s"
 	ConnectionCfgOperatorKeyPrefix   = "connections."
-	PASSWORD                         = "******"
 )
 
 // loadConfigOperatorForSource
@@ -70,7 +73,6 @@ func loadConfigOperatorForSource(pluginName string) {
 		ConfigManager.lock.Lock()
 		ConfigManager.cfgOperators[yamlKey] = cfg
 		ConfigManager.lock.Unlock()
-		conf.Log.Infof("Loading yaml file for source: %s", pluginName)
 	}
 }
 
@@ -84,7 +86,6 @@ func loadConfigOperatorForSink(pluginName string) {
 		ConfigManager.lock.Lock()
 		ConfigManager.cfgOperators[yamlKey] = cfg
 		ConfigManager.lock.Unlock()
-		conf.Log.Infof("Loading yaml file for sink: %s", pluginName)
 	}
 }
 
@@ -98,11 +99,10 @@ func loadConfigOperatorForConnection(pluginName string) {
 		ConfigManager.lock.Lock()
 		ConfigManager.cfgOperators[yamlKey] = cfg
 		ConfigManager.lock.Unlock()
-		conf.Log.Infof("Loading yaml file for connection: %s", pluginName)
 	}
 }
 
-func delConfKey(configOperatorKey, confKey, language string) error {
+func delConfKey(configOperatorKey, confKey, language string) (err error) {
 	ConfigManager.lock.Lock()
 	defer ConfigManager.lock.Unlock()
 
@@ -113,24 +113,45 @@ func delConfKey(configOperatorKey, confKey, language string) error {
 
 	cfgOps.DeleteConfKey(confKey)
 
-	err := cfgOps.SaveCfgToStorage()
+	err = cfgOps.SaveCfgToStorage()
 	if err != nil {
 		return fmt.Errorf(`%s%s.%v`, getMsg(language, source, "write_data_fail"), configOperatorKey, err)
 	}
 	return nil
 }
 
-func DelSourceConfKey(plgName, confKey, language string) error {
+func DelSourceConfKey(plgName, confKey, language string) (err error) {
+	defer func() {
+		if err != nil {
+			if _, ok := err.(errorx.ErrorWithCode); !ok {
+				err = errorx.NewWithCode(errorx.ConfKeyError, err.Error())
+			}
+		}
+	}()
 	configOperatorKey := fmt.Sprintf(SourceCfgOperatorKeyTemplate, plgName)
 	return delConfKey(configOperatorKey, confKey, language)
 }
 
-func DelSinkConfKey(plgName, confKey, language string) error {
+func DelSinkConfKey(plgName, confKey, language string) (err error) {
+	defer func() {
+		if err != nil {
+			if _, ok := err.(errorx.ErrorWithCode); !ok {
+				err = errorx.NewWithCode(errorx.ConfKeyError, err.Error())
+			}
+		}
+	}()
 	configOperatorKey := fmt.Sprintf(SinkCfgOperatorKeyTemplate, plgName)
 	return delConfKey(configOperatorKey, confKey, language)
 }
 
-func DelConnectionConfKey(plgName, confKey, language string) error {
+func DelConnectionConfKey(plgName, confKey, language string) (err error) {
+	defer func() {
+		if err != nil {
+			if _, ok := err.(errorx.ErrorWithCode); !ok {
+				err = errorx.NewWithCode(errorx.ConfKeyError, err.Error())
+			}
+		}
+	}()
 	configOperatorKey := fmt.Sprintf(ConnectionCfgOperatorKeyTemplate, plgName)
 	return delConfKey(configOperatorKey, confKey, language)
 }
@@ -145,7 +166,63 @@ func delYamlConf(configOperatorKey string) {
 	}
 }
 
+func GetConfOperator(configOperatorKey string) (conf.ConfigOperator, bool) {
+	ConfigManager.lock.RLock()
+	defer ConfigManager.lock.RUnlock()
+	cfgOps, ok := ConfigManager.cfgOperators[configOperatorKey]
+	return cfgOps, ok
+}
+
+func GetSourceResourceConf(sourceType string) map[string]map[string]map[string]interface{} {
+	ConfigManager.lock.RLock()
+	defer ConfigManager.lock.RUnlock()
+	result := make(map[string]map[string]map[string]interface{})
+	if sourceType == "" {
+		for k, v := range ConfigManager.cfgOperators {
+			if strings.HasPrefix(k, "sources.") {
+				typ := k[len("sources."):]
+				for name, c := range v.CopyConfContent() {
+					appendConfKeyInResult(result, typ, name, c)
+				}
+			}
+		}
+		return result
+	}
+	// specific sourceType
+	for k, v := range ConfigManager.cfgOperators {
+		if strings.HasPrefix(k, "sources.") {
+			typ := k[len("sources."):]
+			for name, c := range v.CopyConfContent() {
+				value, ok := c["sourceType"]
+				if ok {
+					sv, ok := value.(string)
+					if ok && sv == sourceType {
+						appendConfKeyInResult(result, typ, name, c)
+					}
+				}
+			}
+		}
+	}
+	return result
+}
+
+func appendConfKeyInResult(result map[string]map[string]map[string]interface{}, typ, confKey string, confValue map[string]interface{}) {
+	v1, ok := result[typ]
+	if !ok {
+		result[typ] = make(map[string]map[string]interface{})
+		v1 = result[typ]
+	}
+	v1[confKey] = confValue
+}
+
 func GetYamlConf(configOperatorKey, language string) (b []byte, err error) {
+	defer func() {
+		if err != nil {
+			if _, ok := err.(errorx.ErrorWithCode); !ok {
+				err = errorx.NewWithCode(errorx.ConfKeyError, err.Error())
+			}
+		}
+	}()
 	ConfigManager.lock.RLock()
 	defer ConfigManager.lock.RUnlock()
 
@@ -155,9 +232,13 @@ func GetYamlConf(configOperatorKey, language string) (b []byte, err error) {
 	}
 
 	cf := cfgOps.CopyConfContent()
-	for key, kvs := range cf {
-		cf[key] = hiddenPassword(kvs)
+	for plug, props := range cf {
+		changed, newProps := replace.ReplacePropsWithPlug(plug, props)
+		if changed {
+			cf[plug] = newProps
+		}
 	}
+
 	if b, err = json.Marshal(cf); nil != err {
 		return nil, fmt.Errorf(`%s%v`, getMsg(language, source, "json_marshal_fail"), cf)
 	} else {
@@ -165,35 +246,28 @@ func GetYamlConf(configOperatorKey, language string) (b []byte, err error) {
 	}
 }
 
-func hiddenPassword(kvs map[string]interface{}) map[string]interface{} {
-	for k, v := range kvs {
-		if m, ok := v.(map[string]interface{}); ok {
-			kvs[k] = hiddenPassword(m)
-		}
-		if strings.ToLower(k) == "password" {
-			kvs[k] = PASSWORD
-		}
-		if strings.ToLower(k) == "url" {
-			if _, ok := v.(string); !ok {
-				continue
-			}
-			u, err := url.Parse(v.(string))
-			if err != nil || u.User == nil {
-				continue
-			}
-			password, _ := u.User.Password()
-			if password != "" {
-				u.User = url.UserPassword(u.User.Username(), PASSWORD)
-				kvs[k] = u.String()
-			}
+func replaceConfigurations(plg string, cf YamlConfigurations) YamlConfigurations {
+	for key, props := range cf {
+		replaced, newProps := replace.ReplacePropsWithPlug(plg, props)
+		if replaced {
+			cf[key] = newProps
 		}
 	}
-	return kvs
+	return cf
 }
 
 func addSourceConfKeys(plgName string, configurations YamlConfigurations) (err error) {
+	defer func() {
+		if err != nil {
+			if _, ok := err.(errorx.ErrorWithCode); !ok {
+				err = errorx.NewWithCode(errorx.ConfKeyError, err.Error())
+			}
+		}
+	}()
 	ConfigManager.lock.Lock()
 	defer ConfigManager.lock.Unlock()
+
+	configurations = replaceConfigurations(plgName, configurations)
 
 	configOperatorKey := fmt.Sprintf(SourceCfgOperatorKeyTemplate, plgName)
 
@@ -215,21 +289,32 @@ func addSourceConfKeys(plgName string, configurations YamlConfigurations) (err e
 	return nil
 }
 
-func AddSourceConfKey(plgName, confKey, language string, content []byte) error {
+func AddSourceConfKey(plgName, confKey, language string, content []byte) (err error) {
+	defer func() {
+		if err != nil {
+			if _, ok := err.(errorx.ErrorWithCode); !ok {
+				err = errorx.NewWithCode(errorx.ConfKeyError, err.Error())
+			}
+		}
+	}()
 	ConfigManager.lock.Lock()
 	defer ConfigManager.lock.Unlock()
 
 	configOperatorKey := fmt.Sprintf(SourceCfgOperatorKeyTemplate, plgName)
 
 	reqField := make(map[string]interface{})
-	err := json.Unmarshal(content, &reqField)
+	err = json.Unmarshal(content, &reqField)
 	if nil != err {
 		return fmt.Errorf(`%s%s.%v`, getMsg(language, source, "type_conversion_fail"), plgName, err)
 	}
-
 	var cfgOps conf.ConfigOperator
 	var found bool
 
+	if err := validateConf(plgName, reqField, true); err != nil {
+		return err
+	}
+
+	_, reqField = replace.ReplacePropsWithPlug(plgName, reqField)
 	cfgOps, found = ConfigManager.cfgOperators[configOperatorKey]
 	if !found {
 		cfgOps = conf.NewConfigOperatorForSource(plgName)
@@ -247,18 +332,51 @@ func AddSourceConfKey(plgName, confKey, language string, content []byte) error {
 	return nil
 }
 
-func AddSinkConfKey(plgName, confKey, language string, content []byte) error {
+func validateConf(pluginName string, props map[string]interface{}, isSource bool) error {
+	m := io.GetManager()
+	if !isSource {
+		s, err := m.Sink(pluginName)
+		if err != nil {
+			return err
+		}
+		if v, ok := s.(util.PropsValidator); ok {
+			return v.Validate(props)
+		}
+		return nil
+	} else {
+		s, err := m.Source(pluginName)
+		if err != nil {
+			return err
+		}
+		if v, ok := s.(util.PropsValidator); ok {
+			return v.Validate(props)
+		}
+		return nil
+	}
+}
+
+func AddSinkConfKey(plgName, confKey, language string, content []byte) (err error) {
+	defer func() {
+		if err != nil {
+			if _, ok := err.(errorx.ErrorWithCode); !ok {
+				err = errorx.NewWithCode(errorx.ConfKeyError, err.Error())
+			}
+		}
+	}()
 	ConfigManager.lock.Lock()
 	defer ConfigManager.lock.Unlock()
 
 	configOperatorKey := fmt.Sprintf(SinkCfgOperatorKeyTemplate, plgName)
 
 	reqField := make(map[string]interface{})
-	err := json.Unmarshal(content, &reqField)
+	err = json.Unmarshal(content, &reqField)
 	if nil != err {
 		return fmt.Errorf(`%s%s.%v`, getMsg(language, sink, "type_conversion_fail"), plgName, err)
 	}
-
+	if err := validateConf(plgName, reqField, false); err != nil {
+		return err
+	}
+	_, reqField = replace.ReplacePropsWithPlug(plgName, reqField)
 	var cfgOps conf.ConfigOperator
 	var found bool
 
@@ -279,9 +397,18 @@ func AddSinkConfKey(plgName, confKey, language string, content []byte) error {
 	return nil
 }
 
-func addSinkConfKeys(plgName string, cf YamlConfigurations) error {
+func addSinkConfKeys(plgName string, cf YamlConfigurations) (err error) {
+	defer func() {
+		if err != nil {
+			if _, ok := err.(errorx.ErrorWithCode); !ok {
+				err = errorx.NewWithCode(errorx.ConfKeyError, err.Error())
+			}
+		}
+	}()
 	ConfigManager.lock.Lock()
 	defer ConfigManager.lock.Unlock()
+
+	cf = replaceConfigurations(plgName, cf)
 
 	configOperatorKey := fmt.Sprintf(SinkCfgOperatorKeyTemplate, plgName)
 
@@ -296,25 +423,26 @@ func addSinkConfKeys(plgName string, cf YamlConfigurations) error {
 
 	cfgOps.LoadConfContent(cf)
 
-	err := cfgOps.SaveCfgToStorage()
+	err = cfgOps.SaveCfgToStorage()
 	if err != nil {
 		return fmt.Errorf(`%s.%v`, configOperatorKey, err)
 	}
 	return nil
 }
 
-func AddConnectionConfKey(plgName, confKey, language string, content []byte) error {
+func AddConnectionConfKey(plgName, confKey, language string, reqField map[string]interface{}) (err error) {
+	defer func() {
+		if err != nil {
+			if _, ok := err.(errorx.ErrorWithCode); !ok {
+				err = errorx.NewWithCode(errorx.ConfKeyError, err.Error())
+			}
+		}
+	}()
 	ConfigManager.lock.Lock()
 	defer ConfigManager.lock.Unlock()
 
 	configOperatorKey := fmt.Sprintf(ConnectionCfgOperatorKeyTemplate, plgName)
-
-	reqField := make(map[string]interface{})
-	err := json.Unmarshal(content, &reqField)
-	if nil != err {
-		return fmt.Errorf(`%s%s.%v`, getMsg(language, source, "type_conversion_fail"), plgName, err)
-	}
-
+	_, reqField = replace.ReplacePropsWithPlug(plgName, reqField)
 	var cfgOps conf.ConfigOperator
 	var found bool
 
@@ -335,9 +463,18 @@ func AddConnectionConfKey(plgName, confKey, language string, content []byte) err
 	return nil
 }
 
-func addConnectionConfKeys(plgName string, cf YamlConfigurations) error {
+func addConnectionConfKeys(plgName string, cf YamlConfigurations) (err error) {
+	defer func() {
+		if err != nil {
+			if _, ok := err.(errorx.ErrorWithCode); !ok {
+				err = errorx.NewWithCode(errorx.ConfKeyError, err.Error())
+			}
+		}
+	}()
 	ConfigManager.lock.Lock()
 	defer ConfigManager.lock.Unlock()
+
+	cf = replaceConfigurations(plgName, cf)
 
 	configOperatorKey := fmt.Sprintf(ConnectionCfgOperatorKeyTemplate, plgName)
 
@@ -352,7 +489,7 @@ func addConnectionConfKeys(plgName string, cf YamlConfigurations) error {
 
 	cfgOps.LoadConfContent(cf)
 
-	err := cfgOps.SaveCfgToStorage()
+	err = cfgOps.SaveCfgToStorage()
 	if err != nil {
 		return fmt.Errorf(`%s.%v`, configOperatorKey, err)
 	}
@@ -360,6 +497,13 @@ func addConnectionConfKeys(plgName string, cf YamlConfigurations) error {
 }
 
 func GetResources(language string) (b []byte, err error) {
+	defer func() {
+		if err != nil {
+			if _, ok := err.(errorx.ErrorWithCode); !ok {
+				err = errorx.NewWithCode(errorx.ConfKeyError, err.Error())
+			}
+		}
+	}()
 	ConfigManager.lock.RLock()
 	defer ConfigManager.lock.RUnlock()
 	var srcResources []map[string]string
@@ -437,15 +581,6 @@ func GetConfigurations() YamlConfigurationSet {
 	connectionResources := map[string]string{}
 
 	for key, ops := range ConfigManager.cfgOperators {
-		if strings.HasPrefix(key, ConnectionCfgOperatorKeyPrefix) {
-			plugin := strings.TrimPrefix(key, ConnectionCfgOperatorKeyPrefix)
-			cfs := ops.CopyUpdatableConfContent()
-			if len(cfs) > 0 {
-				jsonByte, _ := json.Marshal(cfs)
-				connectionResources[plugin] = string(jsonByte)
-			}
-			continue
-		}
 		if strings.HasPrefix(key, SourceCfgOperatorKeyPrefix) {
 			plugin := strings.TrimPrefix(key, SourceCfgOperatorKeyPrefix)
 			cfs := ops.CopyUpdatableConfContent()
@@ -463,6 +598,15 @@ func GetConfigurations() YamlConfigurationSet {
 				sinkResources[plugin] = string(jsonByte)
 			}
 			continue
+		}
+	}
+	connConfigs, err := conf.GetAllConnConfigs()
+	if err != nil {
+		conf.Log.Warnf("export connections err:%v", err)
+	} else {
+		for plugin, props := range connConfigs {
+			jsonByte, _ := json.Marshal(props)
+			connectionResources[plugin] = string(jsonByte)
 		}
 	}
 
@@ -495,15 +639,6 @@ func GetConfigurationsFor(yaml YamlConfigurationKeys) YamlConfigurationSet {
 	connectionResources := map[string]string{}
 
 	for key, ops := range ConfigManager.cfgOperators {
-		if strings.HasPrefix(key, ConnectionCfgOperatorKeyPrefix) {
-			plugin := strings.TrimPrefix(key, ConnectionCfgOperatorKeyPrefix)
-			cfs := ops.CopyUpdatableConfContent()
-			if len(cfs) > 0 {
-				jsonByte, _ := json.Marshal(cfs)
-				connectionResources[plugin] = string(jsonByte)
-			}
-			continue
-		}
 		if strings.HasPrefix(key, SourceCfgOperatorKeyPrefix) {
 			plugin := strings.TrimPrefix(key, SourceCfgOperatorKeyPrefix)
 			keys, ok := sourcesConfigKeys[plugin]
@@ -527,6 +662,15 @@ func GetConfigurationsFor(yaml YamlConfigurationKeys) YamlConfigurationSet {
 				}
 			}
 			continue
+		}
+	}
+	connConfigs, err := conf.GetAllConnConfigs()
+	if err != nil {
+		conf.Log.Warnf("export connections err:%v", err)
+	} else {
+		for plugin, props := range connConfigs {
+			jsonByte, _ := json.Marshal(props)
+			connectionResources[plugin] = string(jsonByte)
 		}
 	}
 
@@ -624,6 +768,9 @@ func LoadConfigurations(configSets YamlConfigurationSet) YamlConfigurationSet {
 			continue
 		}
 	}
+	if err := connection.ReloadNamedConnection(); err != nil {
+		conf.Log.Errorf("reload connection config error: %s", err.Error())
+	}
 	return configResponse
 }
 
@@ -678,6 +825,9 @@ func LoadConfigurationsPartial(configSets YamlConfigurationSet) YamlConfiguratio
 			configResponse.Connections[key] = err.Error()
 			continue
 		}
+	}
+	if err := connection.ReloadNamedConnection(); err != nil {
+		conf.Log.Errorf("reload connection config error: %s", err.Error())
 	}
 	return configResponse
 }

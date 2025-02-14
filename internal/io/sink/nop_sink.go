@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,16 +15,16 @@
 package sink
 
 import (
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
 )
 
 type NopSink struct {
 	log bool
 }
 
-func (ns *NopSink) Configure(ps map[string]interface{}) error {
+func (ns *NopSink) Provision(ctx api.StreamContext, configs map[string]any) error {
 	var log bool
-	l, ok := ps["log"]
+	l, ok := configs["log"]
 	if ok {
 		log = l.(bool)
 	}
@@ -32,14 +32,14 @@ func (ns *NopSink) Configure(ps map[string]interface{}) error {
 	return nil
 }
 
-func (ns *NopSink) Open(ctx api.StreamContext) error {
+func (ns *NopSink) Connect(ctx api.StreamContext, _ api.StatusChangeHandler) error {
 	return nil
 }
 
-func (ns *NopSink) Collect(ctx api.StreamContext, item interface{}) error {
+func (ns *NopSink) Collect(ctx api.StreamContext, item api.RawTuple) error {
 	logger := ctx.GetLogger()
 	if ns.log {
-		logger.Infof("%s", item)
+		logger.Infof("%s", item.Raw())
 	}
 	return nil
 }
@@ -47,3 +47,9 @@ func (ns *NopSink) Collect(ctx api.StreamContext, item interface{}) error {
 func (ns *NopSink) Close(ctx api.StreamContext) error {
 	return nil
 }
+
+func GetSink() api.Sink {
+	return &NopSink{}
+}
+
+var _ api.BytesCollector = &NopSink{}

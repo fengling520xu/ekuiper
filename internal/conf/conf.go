@@ -1,4 +1,4 @@
-// Copyright 2023 EMQ Technologies Co., Ltd.
+// Copyright 2023-2025 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,47 +15,59 @@
 package conf
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
-	"github.com/lestrrat-go/file-rotatelogs"
 	"github.com/sirupsen/logrus"
+	"github.com/yisaer/file-rotatelogs"
 
-	"github.com/lf-edge/ekuiper/internal/conf/logger"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/cast"
-	"github.com/lf-edge/ekuiper/pkg/schedule"
+	"github.com/lf-edge/ekuiper/v2/internal/conf/logger"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/schedule"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
-const ConfFileName = "kuiper.yaml"
+const (
+	ConfFileName  = "kuiper.yaml"
+	DebugLogLevel = "debug"
+	InfoLogLevel  = "info"
+	WarnLogLevel  = "warn"
+	ErrorLogLevel = "error"
+	FatalLogLevel = "fatal"
+	PanicLogLevel = "panic"
+)
 
 var (
 	Config    *KuiperConf
 	IsTesting bool
+	TestId    string
 )
 
-type tlsConf struct {
+type TlsConf struct {
 	Certfile string `yaml:"certfile"`
 	Keyfile  string `yaml:"keyfile"`
 }
 
 type SinkConf struct {
-	MemoryCacheThreshold int    `json:"memoryCacheThreshold" yaml:"memoryCacheThreshold"`
-	MaxDiskCache         int    `json:"maxDiskCache" yaml:"maxDiskCache"`
-	BufferPageSize       int    `json:"bufferPageSize" yaml:"bufferPageSize"`
-	EnableCache          bool   `json:"enableCache" yaml:"enableCache"`
-	ResendInterval       int    `json:"resendInterval" yaml:"resendInterval"`
-	CleanCacheAtStop     bool   `json:"cleanCacheAtStop" yaml:"cleanCacheAtStop"`
-	ResendAlterQueue     bool   `json:"resendAlterQueue" yaml:"resendAlterQueue"`
-	ResendPriority       int    `json:"resendPriority" yaml:"resendPriority"`
-	ResendIndicatorField string `json:"resendIndicatorField" yaml:"resendIndicatorField"`
+	MemoryCacheThreshold int               `json:"memoryCacheThreshold" yaml:"memoryCacheThreshold"`
+	MaxDiskCache         int               `json:"maxDiskCache" yaml:"maxDiskCache"`
+	BufferPageSize       int               `json:"bufferPageSize" yaml:"bufferPageSize"`
+	EnableCache          bool              `json:"enableCache" yaml:"enableCache"`
+	ResendInterval       cast.DurationConf `json:"resendInterval" yaml:"resendInterval"`
+	CleanCacheAtStop     bool              `json:"cleanCacheAtStop" yaml:"cleanCacheAtStop"`
+	ResendAlterQueue     bool              `json:"resendAlterQueue" yaml:"resendAlterQueue"`
+	ResendPriority       int               `json:"resendPriority" yaml:"resendPriority"`
+	ResendIndicatorField string            `json:"resendIndicatorField" yaml:"resendIndicatorField"`
+	ResendDestination    string            `json:"resendDestination" yaml:"resendDestination"`
 }
 
 // Validate the configuration and reset to the default value for invalid values.
@@ -77,10 +89,9 @@ func (sc *SinkConf) Validate() error {
 		errs = errors.Join(errs, errors.New("bufferPageSize:bufferPageSize must be positive"))
 	}
 	if sc.ResendInterval < 0 {
-		sc.ResendInterval = 0
-		Log.Warnf("resendInterval is less than 0, set to 0")
 		errs = errors.Join(errs, errors.New("resendInterval:resendInterval must be positive"))
 	}
+
 	if sc.BufferPageSize > sc.MemoryCacheThreshold {
 		sc.MemoryCacheThreshold = sc.BufferPageSize
 		Log.Warnf("memoryCacheThreshold is less than bufferPageSize, set to %d", sc.BufferPageSize)
@@ -112,7 +123,7 @@ func (sc *SinkConf) Validate() error {
 type SourceConf struct {
 	HttpServerIp   string   `json:"httpServerIp" yaml:"httpServerIp"`
 	HttpServerPort int      `json:"httpServerPort" yaml:"httpServerPort"`
-	HttpServerTls  *tlsConf `json:"httpServerTls" yaml:"httpServerTls"`
+	HttpServerTls  *TlsConf `json:"httpServerTls" yaml:"httpServerTls"`
 }
 
 func (sc *SourceConf) Validate() error {
@@ -158,58 +169,101 @@ func (s *syslogConf) Validate() error {
 
 type KuiperConf struct {
 	Basic struct {
-		Debug              bool        `yaml:"debug"`
-		ConsoleLog         bool        `yaml:"consoleLog"`
-		FileLog            bool        `yaml:"fileLog"`
-		Syslog             *syslogConf `yaml:"syslog"`
-		RotateTime         int         `yaml:"rotateTime"`
-		MaxAge             int         `yaml:"maxAge"`
-		RotateSize         int64       `yaml:"rotateSize"`
-		RotateCount        int         `yaml:"rotateCount"`
-		TimeZone           string      `yaml:"timezone"`
-		Ip                 string      `yaml:"ip"`
-		Port               int         `yaml:"port"`
-		RestIp             string      `yaml:"restIp"`
-		RestPort           int         `yaml:"restPort"`
-		RestTls            *tlsConf    `yaml:"restTls"`
-		Prometheus         bool        `yaml:"prometheus"`
-		PrometheusPort     int         `yaml:"prometheusPort"`
-		PluginHosts        string      `yaml:"pluginHosts"`
-		Authentication     bool        `yaml:"authentication"`
-		IgnoreCase         bool        `yaml:"ignoreCase"`
-		SQLConf            *SQLConf    `yaml:"sql"`
-		RulePatrolInterval string      `yaml:"rulePatrolInterval"`
-		CfgStorageType     string      `yaml:"cfgStorageType"`
+		LogLevel                string            `yaml:"logLevel"`
+		Debug                   bool              `yaml:"debug"`
+		ConsoleLog              bool              `yaml:"consoleLog"`
+		FileLog                 bool              `yaml:"fileLog"`
+		LogDisableTimestamp     bool              `yaml:"logDisableTimestamp"`
+		Syslog                  *syslogConf       `yaml:"syslog"`
+		RotateTime              int               `yaml:"rotateTime"`
+		MaxAge                  int               `yaml:"maxAge"`
+		RotateSize              int64             `yaml:"rotateSize"`
+		RotateCount             int               `yaml:"rotateCount"`
+		TimeZone                string            `yaml:"timezone"`
+		Ip                      string            `yaml:"ip"`
+		Port                    int               `yaml:"port"`
+		RestIp                  string            `yaml:"restIp"`
+		RestPort                int               `yaml:"restPort"`
+		RestTls                 *TlsConf          `yaml:"restTls"`
+		Prometheus              bool              `yaml:"prometheus"`
+		PrometheusPort          int               `yaml:"prometheusPort"`
+		PluginHosts             string            `yaml:"pluginHosts"`
+		Authentication          bool              `yaml:"authentication"`
+		IgnoreCase              bool              `yaml:"ignoreCase"`
+		SQLConf                 *SQLConf          `yaml:"sql"`
+		RulePatrolInterval      cast.DurationConf `yaml:"rulePatrolInterval"`
+		EnableOpenZiti          bool              `yaml:"enableOpenZiti"`
+		AesKey                  string            `yaml:"aesKey"`
+		GracefulShutdownTimeout cast.DurationConf `yaml:"gracefulShutdownTimeout"`
+		EnableResourceProfiling bool              `yaml:"enableResourceProfiling"`
+		MetricsDumpConfig       MetricsDumpConfig `yaml:"metricsDumpConfig"`
 	}
-	Rule   api.RuleOption
+	Rule   def.RuleOption
 	Sink   *SinkConf
 	Source *SourceConf
 	Store  struct {
 		Type         string `yaml:"type"`
 		ExtStateType string `yaml:"extStateType"`
 		Redis        struct {
-			Host               string `yaml:"host"`
-			Port               int    `yaml:"port"`
-			Password           string `yaml:"password"`
-			Timeout            int    `yaml:"timeout"`
-			ConnectionSelector string `yaml:"connectionSelector"`
+			Host               string            `yaml:"host"`
+			Port               int               `yaml:"port"`
+			Password           string            `yaml:"password"`
+			Timeout            cast.DurationConf `yaml:"timeout"`
+			ConnectionSelector string            `yaml:"connectionSelector"`
 		}
 		Sqlite struct {
 			Name string `yaml:"name"`
 		}
+		Fdb struct {
+			Path string `yaml:"path"`
+		}
 	}
 	Portable struct {
-		PythonBin   string `yaml:"pythonBin"`
-		InitTimeout int    `yaml:"initTimeout"`
+		PythonBin   string            `yaml:"pythonBin"`
+		InitTimeout cast.DurationConf `yaml:"initTimeout"`
+		SendTimeout time.Duration     `yaml:"sendTimeout"`
+		RecvTimeout time.Duration     `yaml:"recvTimeout"`
 	}
+	Connection struct {
+		BackoffMaxElapsedDuration cast.DurationConf `yaml:"backoffMaxElapsedDuration"`
+	}
+	OpenTelemetry OpenTelemetry `yaml:"openTelemetry"`
+
+	AesKey []byte
 }
 
-func SetDebugLevel(v bool) {
-	lvl := logrus.InfoLevel
-	if v {
-		lvl = logrus.DebugLevel
+type MetricsDumpConfig struct {
+	Enable           bool          `yaml:"enable"`
+	RetainedDuration time.Duration `yaml:"retainedDuration"`
+}
+
+type OpenTelemetry struct {
+	ServiceName           string `yaml:"serviceName"`
+	EnableRemoteCollector bool   `yaml:"enableRemoteCollector"`
+	RemoteEndpoint        string `yaml:"remoteEndpoint"`
+	LocalTraceCapacity    int    `yaml:"localTraceCapacity"`
+	EnableLocalStorage    bool   `yaml:"enableLocalStorage"`
+}
+
+func SetLogLevel(level string, debug bool) {
+	if debug {
+		Log.SetLevel(logrus.DebugLevel)
+		return
 	}
-	Log.SetLevel(lvl)
+	switch level {
+	case DebugLogLevel:
+		Log.SetLevel(logrus.DebugLevel)
+	case InfoLogLevel:
+		Log.SetLevel(logrus.InfoLevel)
+	case WarnLogLevel:
+		Log.SetLevel(logrus.WarnLevel)
+	case ErrorLogLevel:
+		Log.SetLevel(logrus.ErrorLevel)
+	case FatalLogLevel:
+		Log.SetLevel(logrus.FatalLevel)
+	case PanicLogLevel:
+		Log.SetLevel(logrus.PanicLevel)
+	}
 }
 
 func SetConsoleAndFileLog(consoleLog, fileLog bool) error {
@@ -239,7 +293,7 @@ func SetConsoleAndFileLog(consoleLog, fileLog bool) error {
 		ro = append(ro, rotatelogs.WithLinkName(file))
 	}
 	logWriter, err := rotatelogs.New(
-		file+".%Y-%m-%d_%H-%M-%S",
+		file[:len(file)-len(filepath.Ext(file))]+".%Y-%m-%dT%H-%M-%S"+filepath.Ext(file),
 		ro...,
 	)
 
@@ -249,7 +303,7 @@ func SetConsoleAndFileLog(consoleLog, fileLog bool) error {
 	} else if consoleLog {
 		mw := io.MultiWriter(os.Stdout, logWriter)
 		Log.SetOutput(mw)
-	} else if !consoleLog {
+	} else {
 		Log.SetOutput(logWriter)
 	}
 	if Config.Basic.RotateCount > 0 {
@@ -266,13 +320,13 @@ func InitConf() {
 		panic(err)
 	}
 	kc := KuiperConf{
-		Rule: api.RuleOption{
-			LateTol:            1000,
+		Rule: def.RuleOption{
+			LateTol:            cast.DurationConf(time.Second),
 			Concurrency:        1,
 			BufferLength:       1024,
-			CheckpointInterval: 300000, // 5 minutes
-			SendError:          true,
-			Restart: &api.RestartStrategy{
+			CheckpointInterval: cast.DurationConf(5 * time.Minute), // 5 minutes
+			SendError:          false,
+			RestartStrategy: &def.RestartStrategy{
 				Attempts:     0,
 				Delay:        1000,
 				Multiplier:   2,
@@ -295,14 +349,23 @@ func InitConf() {
 		Config.Basic.RestIp = "0.0.0.0"
 	}
 
-	if len(Config.Basic.RulePatrolInterval) < 1 {
-		Config.Basic.RulePatrolInterval = "10s"
+	if time.Duration(Config.Basic.RulePatrolInterval) < time.Second {
+		Log.Warnf("rule patrol interval %v is less than 1 second, set it to 10 seconds", Config.Basic.RulePatrolInterval)
+		Config.Basic.RulePatrolInterval = cast.DurationConf(10 * time.Second)
 	}
 
-	if Config.Basic.Debug {
-		SetDebugLevel(true)
+	if time.Duration(Config.Connection.BackoffMaxElapsedDuration) < 1 {
+		Config.Connection.BackoffMaxElapsedDuration = cast.DurationConf(3 * time.Minute)
 	}
 
+	if Config.Basic.LogLevel == "" {
+		Config.Basic.LogLevel = InfoLogLevel
+	}
+	SetLogLevel(Config.Basic.LogLevel, Config.Basic.Debug)
+	SetLogFormat(Config.Basic.LogDisableTimestamp)
+	if err := SetConsoleAndFileLog(Config.Basic.ConsoleLog, Config.Basic.FileLog); err != nil {
+		log.Fatal(err)
+	}
 	if os.Getenv(logger.KuiperSyslogKey) == "true" || Config.Basic.Syslog != nil {
 		c := Config.Basic.Syslog
 		if c == nil {
@@ -319,8 +382,8 @@ func InitConf() {
 		}
 	}
 
-	if err := SetConsoleAndFileLog(Config.Basic.ConsoleLog, Config.Basic.FileLog); err != nil {
-		log.Fatal(err)
+	if time.Duration(Config.Basic.GracefulShutdownTimeout) < 1 {
+		Config.Basic.GracefulShutdownTimeout = cast.DurationConf(3 * time.Second)
 	}
 
 	if Config.Basic.TimeZone != "" {
@@ -333,11 +396,14 @@ func InitConf() {
 		}
 	}
 
-	if Config.Store.Type == "redis" && Config.Store.Redis.ConnectionSelector != "" {
-		if err := RedisStorageConSelectorApply(Config.Store.Redis.ConnectionSelector, Config); err != nil {
+	if Config.Basic.AesKey != "" {
+		key, err := base64.StdEncoding.DecodeString(Config.Basic.AesKey)
+		if err != nil {
 			Log.Fatal(err)
 		}
+		Config.AesKey = key
 	}
+
 	if Config.Store.ExtStateType == "" {
 		Config.Store.ExtStateType = "sqlite"
 	}
@@ -348,11 +414,18 @@ func InitConf() {
 	if Config.Portable.InitTimeout <= 0 {
 		Config.Portable.InitTimeout = 5000
 	}
+	if Config.Portable.SendTimeout <= 0 {
+		Config.Portable.SendTimeout = 5 * time.Second
+	}
+	if Config.Portable.RecvTimeout <= 0 {
+		Config.Portable.RecvTimeout = 5 * time.Second
+	}
 	if Config.Source == nil {
 		Config.Source = &SourceConf{}
 	}
-	if Config.Basic.CfgStorageType == "" {
-		Config.Basic.CfgStorageType = "file"
+
+	if Config.Basic.MetricsDumpConfig.RetainedDuration < 1 {
+		Config.Basic.MetricsDumpConfig.RetainedDuration = 6 * time.Hour
 	}
 
 	_ = Config.Source.Validate()
@@ -365,16 +438,23 @@ func InitConf() {
 		_ = Config.Basic.Syslog.Validate()
 	}
 
+	if Config.OpenTelemetry.RemoteEndpoint == "" {
+		Config.OpenTelemetry.RemoteEndpoint = "localhost:4318"
+	}
+
+	if Config.OpenTelemetry.LocalTraceCapacity < 1 {
+		Config.OpenTelemetry.LocalTraceCapacity = 2048
+	}
+
 	_ = ValidateRuleOption(&Config.Rule)
 }
 
-func ValidateRuleOption(option *api.RuleOption) error {
+func SetLogFormat(disableTimestamp bool) {
+	Log.Formatter.(*logrus.TextFormatter).DisableTimestamp = disableTimestamp
+}
+
+func ValidateRuleOption(option *def.RuleOption) error {
 	var errs error
-	if option.CheckpointInterval < 0 {
-		option.CheckpointInterval = 0
-		Log.Warnf("checkpointInterval is negative, set to 0")
-		errs = errors.Join(errs, errors.New("invalidCheckpointInterval:checkpointInterval must be greater than 0"))
-	}
 	if option.Concurrency < 0 {
 		option.Concurrency = 1
 		Log.Warnf("concurrency is negative, set to 1")
@@ -386,33 +466,33 @@ func ValidateRuleOption(option *api.RuleOption) error {
 		errs = errors.Join(errs, errors.New("invalidBufferLength:bufferLength must be greater than 0"))
 	}
 	if option.LateTol < 0 {
-		option.LateTol = 1000
-		Log.Warnf("lateTol is negative, set to 1000")
+		option.LateTol = cast.DurationConf(time.Second)
+		Log.Warnf("lateTol is negative, set to 1 second")
 		errs = errors.Join(errs, errors.New("invalidLateTol:lateTol must be greater than 0"))
 	}
-	if option.Restart != nil {
-		if option.Restart.Multiplier <= 0 {
-			option.Restart.Multiplier = 2
+	if option.RestartStrategy != nil {
+		if option.RestartStrategy.Multiplier <= 0 {
+			option.RestartStrategy.Multiplier = 2
 			Log.Warnf("restart multiplier is negative, set to 2")
 			errs = errors.Join(errs, errors.New("invalidRestartMultiplier:restart multiplier must be greater than 0"))
 		}
-		if option.Restart.Attempts < 0 {
-			option.Restart.Attempts = 0
+		if option.RestartStrategy.Attempts < 0 {
+			option.RestartStrategy.Attempts = 0
 			Log.Warnf("restart attempts is negative, set to 0")
 			errs = errors.Join(errs, errors.New("invalidRestartAttempts:restart attempts must be greater than 0"))
 		}
-		if option.Restart.Delay <= 0 {
-			option.Restart.Delay = 1000
+		if option.RestartStrategy.Delay <= 0 {
+			option.RestartStrategy.Delay = 1000
 			Log.Warnf("restart delay is negative, set to 1000")
 			errs = errors.Join(errs, errors.New("invalidRestartDelay:restart delay must be greater than 0"))
 		}
-		if option.Restart.MaxDelay <= 0 {
-			option.Restart.MaxDelay = option.Restart.Delay
-			Log.Warnf("restart maxDelay is negative, set to %d", option.Restart.Delay)
+		if option.RestartStrategy.MaxDelay <= 0 {
+			option.RestartStrategy.MaxDelay = option.RestartStrategy.Delay
+			Log.Warnf("restart maxDelay is negative, set to %d", option.RestartStrategy.Delay)
 			errs = errors.Join(errs, errors.New("invalidRestartMaxDelay:restart maxDelay must be greater than 0"))
 		}
-		if option.Restart.JitterFactor <= 0 || option.Restart.JitterFactor >= 1 {
-			option.Restart.JitterFactor = 0.1
+		if option.RestartStrategy.JitterFactor <= 0 || option.RestartStrategy.JitterFactor >= 1 {
+			option.RestartStrategy.JitterFactor = 0.1
 			Log.Warnf("restart jitterFactor must between 0 and 1, set to 0.1")
 			errs = errors.Join(errs, errors.New("invalidRestartJitterFactor:restart jitterFactor must between [0, 1)"))
 		}
@@ -426,7 +506,6 @@ func ValidateRuleOption(option *api.RuleOption) error {
 func init() {
 	logger.Log.Debugf("conf init")
 	IsTesting = logger.IsTesting
-	InitClock()
 }
 
 func gcOutdatedLog(filePath string, maxDuration time.Duration) {

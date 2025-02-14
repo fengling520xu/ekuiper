@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,11 +20,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
 )
 
 func TestTuple(t *testing.T) {
@@ -160,7 +160,7 @@ func TestTuple(t *testing.T) {
 			},
 		},
 		StopAtFirstMatch: false,
-	}, &api.RuleOption{})
+	}, &def.RuleOption{})
 	if err != nil {
 		t.Fatalf("Failed to create switch node: %v", err)
 	}
@@ -209,7 +209,7 @@ outterFor:
 func TestCollection(t *testing.T) {
 	inputs := []*xsql.WindowTuples{
 		{
-			Content: []xsql.TupleRow{
+			Content: []xsql.Row{
 				&xsql.Tuple{
 					Message: map[string]interface{}{
 						"f1": "v1",
@@ -224,7 +224,7 @@ func TestCollection(t *testing.T) {
 				},
 			},
 		}, {
-			Content: []xsql.TupleRow{
+			Content: []xsql.Row{
 				&xsql.Tuple{
 					Message: map[string]interface{}{
 						"f1": "v2",
@@ -245,7 +245,7 @@ func TestCollection(t *testing.T) {
 				},
 			},
 		}, {
-			Content: []xsql.TupleRow{
+			Content: []xsql.Row{
 				&xsql.Tuple{
 					Message: map[string]interface{}{
 						"f1": "v1",
@@ -270,7 +270,7 @@ func TestCollection(t *testing.T) {
 	outputs := [][]*xsql.WindowTuples{
 		{ // avg(f2) > 50
 			{
-				Content: []xsql.TupleRow{
+				Content: []xsql.Row{
 					&xsql.Tuple{
 						Message: map[string]interface{}{
 							"f1": "v1",
@@ -285,7 +285,7 @@ func TestCollection(t *testing.T) {
 					},
 				},
 			}, {
-				Content: []xsql.TupleRow{
+				Content: []xsql.Row{
 					&xsql.Tuple{
 						Message: map[string]interface{}{
 							"f1": "v1",
@@ -309,7 +309,7 @@ func TestCollection(t *testing.T) {
 		},
 		{ // else
 			{
-				Content: []xsql.TupleRow{
+				Content: []xsql.Row{
 					&xsql.Tuple{
 						Message: map[string]interface{}{
 							"f1": "v2",
@@ -357,7 +357,7 @@ func TestCollection(t *testing.T) {
 			},
 		},
 		StopAtFirstMatch: true,
-	}, &api.RuleOption{})
+	}, &def.RuleOption{})
 	if err != nil {
 		t.Fatalf("Failed to create switch node: %v", err)
 	}

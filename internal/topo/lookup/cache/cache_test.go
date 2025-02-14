@@ -19,21 +19,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/benbjohnson/clock"
-
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/topotest/mockclock"
 )
 
 func TestExpiration(t *testing.T) {
-	c := NewCache(20, false)
+	mockclock.ResetClock(0)
+	clock := mockclock.GetMockClock()
+	c := NewCache(20*time.Second, false)
 	defer c.Close()
-	clock := conf.Clock.(*clock.Mock)
-	expects := [][]api.SourceTuple{
-		{api.NewDefaultSourceTupleWithTime(map[string]interface{}{"a": 1}, nil, clock.Now())},
-		{api.NewDefaultSourceTupleWithTime(map[string]interface{}{"a": 2}, nil, clock.Now()), api.NewDefaultSourceTupleWithTime(map[string]interface{}{"a": 3}, nil, clock.Now())},
+	expects := [][]map[string]any{
+		{{"a": 1}},
+		{{"a": 2}, {"a": 3}},
 		{},
 	}
+	// wait for cache to run
+	time.Sleep(10 * time.Millisecond)
 	c.Set("a", expects[0])
 	clock.Add(10 * time.Second)
 	c.Set("b", expects[1])
@@ -62,6 +62,8 @@ func TestExpiration(t *testing.T) {
 	}
 
 	clock.Add(10 * time.Second)
+	// wait for cache to delete
+	time.Sleep(10 * time.Millisecond)
 	_, ok = c.Get("a")
 	if ok {
 		t.Error("a should not exist after expiration")
@@ -84,12 +86,14 @@ func TestExpiration(t *testing.T) {
 }
 
 func TestNoExpiration(t *testing.T) {
+	mockclock.ResetClock(0)
+	clock := mockclock.GetMockClock()
 	c := NewCache(0, true)
 	defer c.Close()
-	clock := conf.Clock.(*clock.Mock)
-	expects := [][]api.SourceTuple{
-		{api.NewDefaultSourceTupleWithTime(map[string]interface{}{"a": 1}, nil, clock.Now())},
-		{api.NewDefaultSourceTupleWithTime(map[string]interface{}{"a": 2}, nil, clock.Now()), api.NewDefaultSourceTupleWithTime(map[string]interface{}{"a": 3}, nil, clock.Now())},
+
+	expects := [][]map[string]any{
+		{{"a": 1}},
+		{{"a": 2}, {"a": 3}},
 		{},
 	}
 	c.Set("a", expects[0])

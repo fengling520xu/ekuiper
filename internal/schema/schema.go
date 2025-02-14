@@ -18,15 +18,15 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/lf-edge/ekuiper/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
 )
 
 type Info struct {
-	Type     def.SchemaType `json:"type"`
-	Name     string         `json:"name"`
-	Content  string         `json:"content"`
-	FilePath string         `json:"file"`
-	SoPath   string         `json:"soFile"`
+	Type     def.SchemaType `json:"type" yaml:"type"`
+	Name     string         `json:"name" yaml:"name"`
+	Content  string         `json:"content,omitempty" yaml:"content,omitempty"`
+	FilePath string         `json:"file,omitempty" yaml:"filePath,omitempty"`
+	SoPath   string         `json:"soFile,omitempty" yaml:"soPath,omitempty"`
 }
 
 func (i *Info) InstallScript() string {

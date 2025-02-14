@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ package collector
 import (
 	"errors"
 
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
 )
 
 // CollectorFunc is a function used to colllect
@@ -41,26 +41,28 @@ func Func(f CollectorFunc) *FuncCollector {
 	return &FuncCollector{f: f}
 }
 
-func (c *FuncCollector) Configure(props map[string]interface{}) error {
+func (c *FuncCollector) Provision(ctx api.StreamContext, configs map[string]any) error {
 	// do nothing
 	return nil
 }
 
-// Open is the starting point that starts the collector
-func (c *FuncCollector) Open(ctx api.StreamContext) error {
-	log := ctx.GetLogger()
-	log.Infoln("Opening func collector")
-
+func (c *FuncCollector) Connect(ctx api.StreamContext, sch api.StatusChangeHandler) error {
+	ctx.GetLogger().Info("Opening func collector")
 	if c.f == nil {
-		return errors.New("func collector missing function")
+		err := errors.New("func collector missing function")
+		sch(api.ConnectionDisconnected, err.Error())
+		return err
 	}
+	sch(api.ConnectionConnected, "")
 	return nil
 }
 
-func (c *FuncCollector) Collect(ctx api.StreamContext, item interface{}) error {
-	return c.f(ctx, item)
+func (c *FuncCollector) Collect(ctx api.StreamContext, item api.RawTuple) error {
+	return c.f(ctx, item.Raw())
 }
 
 func (c *FuncCollector) Close(api.StreamContext) error {
 	return nil
 }
+
+var _ api.BytesCollector = &FuncCollector{}

@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,14 +16,16 @@ package protobuf
 
 import (
 	"fmt"
+	"math"
 
 	// TODO: replace with `google.golang.org/protobuf/proto` pkg.
 	"github.com/golang/protobuf/proto" //nolint:staticcheck
 	dpb "github.com/golang/protobuf/protoc-gen-go/descriptor"
-	"github.com/jhump/protoreflect/desc"
-	"github.com/jhump/protoreflect/dynamic"
+	"github.com/jhump/protoreflect/desc"    //nolint:staticcheck
+	"github.com/jhump/protoreflect/dynamic" //nolint:staticcheck
 
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
 const (
@@ -95,7 +97,7 @@ func (fc *FieldConverter) EncodeField(field *desc.FieldDescriptor, v interface{}
 		)
 		switch ft {
 		case dpb.FieldDescriptorProto_TYPE_DOUBLE:
-			result, err = cast.ToFloat64Slice(v, cast.CONVERT_SAMEKIND)
+			result, err = cast.ToFloat64Slice(v, cast.CONVERT_SAMEKIND, cast.FORCE_CONVERT)
 		case dpb.FieldDescriptorProto_TYPE_FLOAT:
 			result, err = cast.ToTypedSlice(v, func(input interface{}, sn cast.Strictness) (interface{}, error) {
 				r, err := cast.ToFloat32(input, sn)
@@ -105,12 +107,15 @@ func (fc *FieldConverter) EncodeField(field *desc.FieldDescriptor, v interface{}
 					return r, nil
 				}
 			}, "float", cast.CONVERT_SAMEKIND)
-		case dpb.FieldDescriptorProto_TYPE_INT32, dpb.FieldDescriptorProto_TYPE_SFIXED32, dpb.FieldDescriptorProto_TYPE_SINT32:
+		case dpb.FieldDescriptorProto_TYPE_INT32, dpb.FieldDescriptorProto_TYPE_SFIXED32, dpb.FieldDescriptorProto_TYPE_SINT32, dpb.FieldDescriptorProto_TYPE_ENUM:
 			result, err = cast.ToTypedSlice(v, func(input interface{}, sn cast.Strictness) (interface{}, error) {
 				r, err := cast.ToInt(input, sn)
 				if err != nil {
 					return 0, nil
 				} else {
+					if r > math.MaxInt32 {
+						conf.Log.Warnf("value %d is out of int32 range", r)
+					}
 					return int32(r), nil
 				}
 			}, "int", cast.CONVERT_SAMEKIND)
@@ -122,6 +127,9 @@ func (fc *FieldConverter) EncodeField(field *desc.FieldDescriptor, v interface{}
 				if err != nil {
 					return 0, nil
 				} else {
+					if r > math.MaxUint32 {
+						conf.Log.Warnf("value %d is out of uint32 range", v)
+					}
 					return uint32(r), nil
 				}
 			}, "uint", cast.CONVERT_SAMEKIND)
@@ -174,6 +182,9 @@ func (fc *FieldConverter) encodeSingleField(field *desc.FieldDescriptor, v inter
 	case dpb.FieldDescriptorProto_TYPE_INT32, dpb.FieldDescriptorProto_TYPE_SFIXED32, dpb.FieldDescriptorProto_TYPE_SINT32, dpb.FieldDescriptorProto_TYPE_ENUM:
 		r, err := cast.ToInt(v, cast.CONVERT_SAMEKIND)
 		if err == nil {
+			if r > math.MaxInt32 {
+				conf.Log.Warnf("value %d is out of int32 range", v)
+			}
 			return int32(r), nil
 		} else {
 			return nil, fmt.Errorf("invalid type for int type field '%s': %v", fn, err)
@@ -188,6 +199,9 @@ func (fc *FieldConverter) encodeSingleField(field *desc.FieldDescriptor, v inter
 	case dpb.FieldDescriptorProto_TYPE_FIXED32, dpb.FieldDescriptorProto_TYPE_UINT32:
 		r, err := cast.ToUint64(v, cast.CONVERT_SAMEKIND)
 		if err == nil {
+			if r > math.MaxUint32 {
+				conf.Log.Warnf("value %d is out of uint32 range", v)
+			}
 			return uint32(r), nil
 		} else {
 			return nil, fmt.Errorf("invalid type for uint type field '%s': %v", fn, err)
@@ -241,7 +255,7 @@ func (fc *FieldConverter) DecodeField(src interface{}, field *desc.FieldDescript
 	switch field.GetType() {
 	case dpb.FieldDescriptorProto_TYPE_DOUBLE, dpb.FieldDescriptorProto_TYPE_FLOAT:
 		if field.IsRepeated() {
-			r, e = cast.ToFloat64Slice(src, sn)
+			r, e = cast.ToFloat64Slice(src, sn, cast.FORCE_CONVERT)
 		} else {
 			r, e = cast.ToFloat64(src, sn)
 		}
@@ -341,7 +355,17 @@ func (fc *FieldConverter) DecodeMessage(message *dynamic.Message, outputType *de
 	}
 	result := make(map[string]interface{})
 	for _, field := range outputType.GetFields() {
-		fc.decodeMessageField(message.GetField(field), field, result, cast.CONVERT_SAMEKIND)
+		if oneOf := field.GetOneOf(); oneOf != nil {
+			fd, v, err := message.TryGetOneOfField(oneOf)
+			if err != nil {
+				return err
+			}
+			if fd != nil && v != nil {
+				fc.decodeMessageField(v, fd, result, cast.CONVERT_SAMEKIND)
+			}
+		} else {
+			fc.decodeMessageField(message.GetField(field), field, result, cast.CONVERT_SAMEKIND)
+		}
 	}
 	return result
 }

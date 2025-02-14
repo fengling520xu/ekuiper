@@ -1,4 +1,4 @@
-// Copyright 2023 EMQ Technologies Co., Ltd.
+// Copyright 2023-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,23 +20,27 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lf-edge/ekuiper/internal/binder/function"
-	"github.com/lf-edge/ekuiper/internal/binder/io"
-	"github.com/lf-edge/ekuiper/internal/meta"
-	store2 "github.com/lf-edge/ekuiper/internal/pkg/store"
-	"github.com/lf-edge/ekuiper/internal/plugin"
-	"github.com/lf-edge/ekuiper/internal/processor"
-	"github.com/lf-edge/ekuiper/internal/topo/graph"
-	"github.com/lf-edge/ekuiper/internal/topo/node/conf"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/internal/binder/function"
+	"github.com/lf-edge/ekuiper/v2/internal/binder/io"
+	"github.com/lf-edge/ekuiper/v2/internal/meta"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	store2 "github.com/lf-edge/ekuiper/v2/internal/pkg/store"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin"
+	"github.com/lf-edge/ekuiper/v2/internal/processor"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/graph"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/node/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
 type RuleMigrationProcessor struct {
 	r *processor.RuleProcessor
 	s *processor.StreamProcessor
+}
+
+type InstallScriptGetter interface {
+	InstallScript(s string) (string, string)
 }
 
 func NewRuleMigrationProcessor(r *processor.RuleProcessor, s *processor.StreamProcessor) *RuleMigrationProcessor {
@@ -66,7 +70,7 @@ type dependencies struct {
 	schemas          []string
 }
 
-func ruleTraverse(rule *api.Rule, de *dependencies) {
+func ruleTraverse(rule *def.Rule, de *dependencies) {
 	sql := rule.Sql
 	ruleGraph := rule.Graph
 	if sql != "" {
@@ -321,6 +325,7 @@ func (p *RuleMigrationProcessor) ConfigurationPartialExport(rules []string) ([]b
 		Service:          make(map[string]string),
 		Schema:           make(map[string]string),
 		Uploads:          make(map[string]string),
+		Scripts:          map[string]string{},
 	}
 	config.Rules = p.exportRules(rules)
 
@@ -416,10 +421,18 @@ func (p *RuleMigrationProcessor) exportSelected(de *dependencies, config *Config
 	config.ConnectionConfig = configSet.Connections
 
 	// get schema
-	for _, v := range de.schemas {
-		schName, schInfo := getSchemaInstallScript(v)
-		config.Schema[schName] = schInfo
+	if managers["schema"] != nil {
+		f, ok := managers["schema"].(InstallScriptGetter)
+		if ok {
+			for _, v := range de.schemas {
+				schName, schInfo := f.InstallScript(v)
+				config.Schema[schName] = schInfo
+			}
+		} else { // should never happen
+			logger.Errorf("schema manager is not InstallScriptGetter")
+		}
 	}
+
 	config.Uploads = uploadsExport()
 }
 

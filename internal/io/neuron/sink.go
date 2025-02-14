@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,39 +19,54 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/cast"
-	"github.com/lf-edge/ekuiper/pkg/errorx"
-)
+	"github.com/lf-edge/ekuiper/contract/v2/api"
 
-type sink struct {
-	c   *c
-	cli *conninfo
-}
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/node/tracenode"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/connection"
+	"github.com/lf-edge/ekuiper/v2/pkg/errorx"
+	"github.com/lf-edge/ekuiper/v2/pkg/nng"
+)
 
 type c struct {
 	NodeName  string   `json:"nodeName"`
 	GroupName string   `json:"groupName"`
 	Tags      []string `json:"tags"`
 	// If sent with the raw converted string or let us range over the result map
-	Raw bool   `json:"raw"`
-	Url string `json:"url"`
+	Raw bool `json:"raw"`
+}
+
+type sink struct {
+	cw    *connection.ConnWrapper
+	c     *c
+	cc    *nng.SockConf
+	cli   *nng.Sock
+	props map[string]any
 }
 
 type neuronTemplate struct {
 	GroupName string      `json:"group_name"`
 	NodeName  string      `json:"node_name"`
-	TagName   string      `json:"tag_name"`
-	Value     interface{} `json:"value"`
+	Tags      []neuronTag `json:"tags"`
 }
 
-func (s *sink) Configure(props map[string]interface{}) error {
+type neuronTag struct {
+	Name  string `json:"tag_name"`
+	Value any    `json:"value"`
+}
+
+func (s *sink) Provision(_ api.StreamContext, props map[string]any) error {
+	props["protocol"] = PROTOCOL
+	sc, err := nng.ValidateConf(props)
+	if err != nil {
+		return err
+	}
+	s.cc = sc
 	cc := &c{
 		Raw: false,
-		Url: DefaultNeuronUrl,
 	}
-	err := cast.MapToStruct(props, cc)
+	err = cast.MapToStruct(props, cc)
 	if err != nil {
 		return err
 	}
@@ -64,67 +79,83 @@ func (s *sink) Configure(props map[string]interface{}) error {
 		}
 	}
 	s.c = cc
+	s.props = props
 	return nil
 }
 
-func (s *sink) Open(ctx api.StreamContext) error {
-	ctx.GetLogger().Debugf("Opening neuron sink")
-	cli, err := createOrGetConnection(ctx, s.c.Url)
+func (s *sink) Connect(ctx api.StreamContext, sc api.StatusChangeHandler) error {
+	ctx.GetLogger().Infof("Connecting to neuron")
+	cw, err := connection.FetchConnection(ctx, PROTOCOL+s.cc.Url, "nng", s.props, sc)
 	if err != nil {
 		return err
 	}
-	s.cli = cli
+	s.cw = cw
+	cli, err := cw.Wait(ctx)
+	if cli == nil {
+		return fmt.Errorf("neuron client not ready: %v", err)
+	}
+	s.cli = cli.(*nng.Sock)
 	return nil
 }
 
-func (s *sink) Collect(ctx api.StreamContext, data interface{}) error {
+func (s *sink) Collect(ctx api.StreamContext, data api.MessageTuple) error {
 	ctx.GetLogger().Debugf("receive %+v", data)
 	if s.c.Raw {
-		r, _, err := ctx.TransformOutput(data)
+		m := data.ToMap()
+		r, err := json.Marshal(m)
 		if err != nil {
 			return err
 		}
-		return publish(ctx, r, s.cli)
+		r = extractSpanContextIntoData(ctx, data, r)
+		return s.cli.Send(ctx, r)
 	} else {
-		switch d := data.(type) {
-		case []map[string]interface{}:
-			for _, el := range d {
-				err := s.SendMapToNeuron(ctx, el)
-				if err != nil {
-					return err
-				}
-			}
-			return nil
-		case map[string]interface{}:
-			return s.SendMapToNeuron(ctx, d)
-		default:
-			return fmt.Errorf("unrecognized format of %s", data)
-		}
+		return s.SendMapToNeuron(ctx, data)
 	}
+}
+
+// CollectList sends all data at best effort
+// It never return error, so it is not supported for cache and retry
+func (s *sink) CollectList(ctx api.StreamContext, data api.MessageTupleList) error {
+	data.RangeOfTuples(func(index int, tuple api.MessageTuple) bool {
+		err := s.Collect(ctx, tuple)
+		if err != nil {
+			ctx.GetLogger().Errorf("send data %v error %v", data, err)
+		}
+		return true
+	})
+	return nil
 }
 
 func (s *sink) Close(ctx api.StreamContext) error {
 	ctx.GetLogger().Debugf("closing neuron sink")
-	if s.cli != nil {
-		return closeConnection(ctx, s.c.Url)
+	if s.cw != nil {
+		_ = connection.DetachConnection(ctx, s.cw.ID)
 	}
+	s.cli = nil
 	return nil
 }
 
-func (s *sink) SendMapToNeuron(ctx api.StreamContext, el map[string]interface{}) error {
-	n, err := ctx.ParseTemplate(s.c.NodeName, el)
-	if err != nil {
-		return err
+func (s *sink) SendMapToNeuron(ctx api.StreamContext, tuple api.MessageTuple) error {
+	n := s.c.NodeName
+	g := s.c.GroupName
+	if dp, ok := tuple.(api.HasDynamicProps); ok {
+		temp, transformed := dp.DynamicProps(n)
+		if transformed {
+			n = temp
+		}
 	}
-	g, err := ctx.ParseTemplate(s.c.GroupName, el)
-	if err != nil {
-		return err
+	if dp, ok := tuple.(api.HasDynamicProps); ok {
+		temp, transformed := dp.DynamicProps(g)
+		if transformed {
+			g = temp
+		}
 	}
 	t := &neuronTemplate{
 		NodeName:  n,
 		GroupName: g,
 	}
-	var ok bool
+	el := tuple.ToMap()
+	var tags []neuronTag
 	if len(s.c.Tags) == 0 {
 		if conf.IsTesting {
 			var keys []string
@@ -133,58 +164,63 @@ func (s *sink) SendMapToNeuron(ctx api.StreamContext, el map[string]interface{})
 			}
 			sort.Strings(keys)
 			for _, k := range keys {
-				t.TagName = k
-				t.Value = el[k]
-				err := doPublish(ctx, t, s.cli)
-				if err != nil {
-					return err
-				}
+				tags = append(tags, neuronTag{k, el[k]})
 			}
 		} else {
 			for k, v := range el {
-				t.TagName = k
-				t.Value = v
-				err := doPublish(ctx, t, s.cli)
-				if err != nil {
-					return err
-				}
+				tags = append(tags, neuronTag{k, v})
 			}
 		}
 	} else {
+		tags = make([]neuronTag, 0, len(s.c.Tags))
 		// Send as many tags as possible in order and drop the tag if it is invalid
 		for _, tag := range s.c.Tags {
-			t.TagName, err = ctx.ParseTemplate(tag, el)
+			n, err := ctx.ParseTemplate(tag, el)
 			if err != nil {
 				ctx.GetLogger().Errorf("Error parsing tag %s: %v", tag, err)
 				continue
 			}
-			t.Value, ok = el[t.TagName]
+			v, ok := el[n]
 			if !ok {
-				ctx.GetLogger().Errorf("Error get the value of tag %s: %v", t.TagName, err)
+				ctx.GetLogger().Errorf("Error get the value of tag %s: %v", n, err)
 				continue
 			}
-			err := doPublish(ctx, t, s.cli)
-			if err != nil {
-				return err
-			}
+			tags = append(tags, neuronTag{n, v})
 		}
 	}
-	return nil
+	t.Tags = tags
+	return doPublish(ctx, s.cli, tuple, t)
 }
 
-func doPublish(ctx api.StreamContext, t *neuronTemplate, cli *conninfo) error {
+func doPublish(ctx api.StreamContext, cli *nng.Sock, tuple api.MessageTuple, t *neuronTemplate) error {
 	r, err := json.Marshal(t)
 	if err != nil {
 		return fmt.Errorf("Error marshall the tag payload %v: %v", t, err)
 	}
-	err = publish(ctx, r, cli)
+	r = extractSpanContextIntoData(ctx, tuple, r)
+	err = cli.Send(ctx, r)
 	if err != nil {
-		return fmt.Errorf("%s: Error publish the tag payload %s: %v", errorx.IOErr, t.TagName, err)
+		return errorx.NewIOErr(fmt.Sprintf(`Error publish the tag payload %v: %v`, t, err))
 	}
-	ctx.GetLogger().Debugf("Publish %s", r)
+	ctx.GetLogger().Debugf("Send %s", r)
 	return nil
 }
 
-func GetSink() *sink {
+func extractSpanContextIntoData(ctx api.StreamContext, data any, sendBytes []byte) []byte {
+	traced, _, span := tracenode.TraceInput(ctx, data, fmt.Sprintf("%s_emit", ctx.GetOpId()))
+	if traced {
+		defer span.End()
+		traceID := span.SpanContext().TraceID()
+		spanID := span.SpanContext().SpanID()
+		r := NeuronTraceHeader
+		r = append(r, traceID[:]...)
+		r = append(r, spanID[:]...)
+		r = append(r, sendBytes...)
+		return r
+	}
+	return sendBytes
+}
+
+func GetSink() api.Sink {
 	return &sink{}
 }

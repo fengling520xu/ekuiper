@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,59 +17,50 @@ package node
 import (
 	"fmt"
 
-	"github.com/lf-edge/ekuiper/internal/topo/node/metric"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/infra"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/infra"
 )
 
 // JoinAlignNode will block the stream and buffer all the table tuples. Once buffered, it will combine the later input with the buffer
 // The input for batch table MUST be *WindowTuples
 type JoinAlignNode struct {
 	*defaultSinkNode
-	statManager metric.StatManager
-	// states
+	// table states
 	batch map[string][]*xsql.Tuple
+	size  map[string]int
 }
 
 const BatchKey = "$$batchInputs"
 
-func NewJoinAlignNode(name string, emitters []string, options *api.RuleOption) (*JoinAlignNode, error) {
+func NewJoinAlignNode(name string, emitters []string, sizes []int, options *def.RuleOption) (*JoinAlignNode, error) {
 	batch := make(map[string][]*xsql.Tuple, len(emitters))
-	for _, e := range emitters {
-		batch[e] = nil
+	size := make(map[string]int, len(emitters))
+	for i, e := range emitters {
+		s := sizes[i]
+		if s >= 9999 {
+			s = 100
+		}
+		batch[e] = make([]*xsql.Tuple, 0, s)
+		size[e] = sizes[i]
 	}
 	n := &JoinAlignNode{
 		batch: batch,
+		size:  size,
 	}
-	n.defaultSinkNode = &defaultSinkNode{
-		input: make(chan interface{}, options.BufferLength),
-		defaultNode: &defaultNode{
-			outputs:   make(map[string]chan<- interface{}),
-			name:      name,
-			sendError: options.SendError,
-		},
-	}
+	n.defaultSinkNode = newDefaultSinkNode(name, options)
 	return n, nil
 }
 
 func (n *JoinAlignNode) Exec(ctx api.StreamContext, errCh chan<- error) {
-	n.ctx = ctx
+	n.prepareExec(ctx, errCh, "op")
 	log := ctx.GetLogger()
-	log.Debugf("JoinAlignNode %s is started", n.name)
-
-	if len(n.outputs) <= 0 {
-		infra.DrainError(ctx, fmt.Errorf("no output channel found"), errCh)
-		return
-	}
-	stats, err := metric.NewStatManager(ctx, "op")
-	if err != nil {
-		infra.DrainError(ctx, fmt.Errorf("fail to create stat manager"), errCh)
-		return
-	}
-	n.statManager = stats
-	n.statManagers = []metric.StatManager{stats}
 	go func() {
+		defer func() {
+			n.Close()
+		}()
 		err := infra.SafeRun(func() error {
 			// restore batch state
 			if s, err := ctx.GetState(BatchKey); err == nil {
@@ -93,51 +84,35 @@ func (n *JoinAlignNode) Exec(ctx api.StreamContext, errCh chan<- error) {
 				log.Debugf("JoinAlignNode %s is looping", n.name)
 				select {
 				// process incoming item from both streams(transformed) and tables
-				case item, opened := <-n.input:
-					processed := false
-					if item, processed = n.preprocess(item); processed {
+				case item := <-n.input:
+					data, processed := n.commonIngest(ctx, item)
+					if processed {
 						break
 					}
-					n.statManager.IncTotalRecordsIn()
-					n.statManager.ProcessTimeStart()
-					if !opened {
-						n.statManager.IncTotalExceptions("input channel closed")
-						break
-					}
-					switch d := item.(type) {
-					case error:
-						_ = n.Broadcast(d)
-						n.statManager.IncTotalExceptions(d.Error())
-					case *xsql.WatermarkTuple:
-						_ = n.Broadcast(d)
+					n.onProcessStart(ctx, data)
+					switch d := data.(type) {
 					case *xsql.Tuple:
-						log.Debugf("JoinAlignNode receive tuple input %s", d)
-						n.alignBatch(ctx, d)
-					case *xsql.WindowTuples:
-						if d.WindowRange != nil { // real window
-							log.Debugf("JoinAlignNode receive window input %s", d)
-							n.alignBatch(ctx, d)
-						} else { // table window
-							log.Debugf("JoinAlignNode receive batch source %s", d)
-							emitter := d.Content[0].GetEmitter()
-							// Buffer and update batch inputs
-							_, ok := n.batch[emitter]
-							if !ok {
-								e := fmt.Errorf("run JoinAlignNode error: receive batch input from unknown emitter %[1]T(%[1]v)", d)
-								_ = n.Broadcast(e)
-								n.statManager.IncTotalExceptions(e.Error())
-								break
+						log.Debugf("JoinAlignNode receive tuple input %v", d)
+						if b, ok := n.batch[d.Emitter]; ok {
+							s := n.size[d.Emitter]
+							if len(b) >= s {
+								b = b[s-len(b)+1:]
 							}
-							n.batch[emitter] = convertToTupleSlice(d.Content)
+							b = append(b, d)
+							n.batch[d.Emitter] = b
 							_ = ctx.PutState(BatchKey, n.batch)
+						} else {
+							n.alignBatch(ctx, d)
 						}
+					case *xsql.WindowTuples:
+						log.Debugf("JoinAlignNode receive window input %v", d)
+						n.alignBatch(ctx, d)
 					default:
-						e := fmt.Errorf("run JoinAlignNode error: invalid input type but got %[1]T(%[1]v)", d)
-						_ = n.Broadcast(e)
-						n.statManager.IncTotalExceptions(e.Error())
+						n.onError(ctx, fmt.Errorf("run JoinAlignNode error: invalid input type but got %[1]T(%[1]v)", d))
 					}
+					n.onProcessEnd(ctx)
 				case <-ctx.Done():
-					log.Infoln("Cancelling join align node....")
+					log.Info("Cancelling join align node....")
 					return nil
 				}
 			}
@@ -148,21 +123,12 @@ func (n *JoinAlignNode) Exec(ctx api.StreamContext, errCh chan<- error) {
 	}()
 }
 
-func convertToTupleSlice(content []xsql.TupleRow) []*xsql.Tuple {
-	tuples := make([]*xsql.Tuple, len(content))
-	for i, v := range content {
-		tuples[i] = v.(*xsql.Tuple)
-	}
-	return tuples
-}
-
-func (n *JoinAlignNode) alignBatch(_ api.StreamContext, input any) {
-	n.statManager.ProcessTimeStart()
+func (n *JoinAlignNode) alignBatch(ctx api.StreamContext, input any) {
 	var w *xsql.WindowTuples
 	switch t := input.(type) {
 	case *xsql.Tuple:
 		w = &xsql.WindowTuples{
-			Content: make([]xsql.TupleRow, 0),
+			Content: make([]xsql.Row, 0),
 		}
 		w.AddTuple(t)
 	case *xsql.WindowTuples:
@@ -175,8 +141,7 @@ func (n *JoinAlignNode) alignBatch(_ api.StreamContext, input any) {
 			}
 		}
 	}
-	_ = n.Broadcast(w)
-	n.statManager.ProcessTimeEnd()
-	n.statManager.IncTotalRecordsOut()
+	n.Broadcast(w)
+	n.onSend(ctx, w)
 	n.statManager.SetBufferLength(int64(len(n.input)))
 }

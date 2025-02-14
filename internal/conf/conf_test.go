@@ -1,4 +1,4 @@
-// Copyright 2023 EMQ Technologies Co., Ltd.
+// Copyright 2023-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,14 +14,20 @@
 package conf
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
 func TestSourceConfValidate(t *testing.T) {
@@ -58,7 +64,7 @@ func TestSourceConfValidate(t *testing.T) {
 		}, {
 			s: &SourceConf{
 				HttpServerPort: 9090,
-				HttpServerTls: &tlsConf{
+				HttpServerTls: &TlsConf{
 					Certfile: "certfile",
 					Keyfile:  "keyfile",
 				},
@@ -66,7 +72,7 @@ func TestSourceConfValidate(t *testing.T) {
 			e: &SourceConf{
 				HttpServerIp:   "0.0.0.0",
 				HttpServerPort: 9090,
-				HttpServerTls: &tlsConf{
+				HttpServerTls: &TlsConf{
 					Certfile: "certfile",
 					Keyfile:  "keyfile",
 				},
@@ -87,22 +93,26 @@ func TestSourceConfValidate(t *testing.T) {
 
 func TestRuleOptionValidate(t *testing.T) {
 	tests := []struct {
-		s   *api.RuleOption
-		e   *api.RuleOption
+		s   *def.RuleOption
+		e   *def.RuleOption
 		err string
 	}{
 		{
-			s: &api.RuleOption{},
-			e: &api.RuleOption{},
+			s: &def.RuleOption{
+				CheckpointInterval: cast.DurationConf(5 * time.Minute), // 5 minutes
+			},
+			e: &def.RuleOption{
+				CheckpointInterval: cast.DurationConf(5 * time.Minute), // 5 minutes
+			},
 		},
 		{
-			s: &api.RuleOption{
-				LateTol:            1000,
+			s: &def.RuleOption{
+				LateTol:            cast.DurationConf(time.Second),
 				Concurrency:        1,
 				BufferLength:       1024,
-				CheckpointInterval: 300000, // 5 minutes
+				CheckpointInterval: cast.DurationConf(5 * time.Minute), // 5 minutes
 				SendError:          true,
-				Restart: &api.RestartStrategy{
+				RestartStrategy: &def.RestartStrategy{
 					Attempts:     0,
 					Delay:        1000,
 					Multiplier:   1,
@@ -110,13 +120,13 @@ func TestRuleOptionValidate(t *testing.T) {
 					JitterFactor: 0.1,
 				},
 			},
-			e: &api.RuleOption{
-				LateTol:            1000,
+			e: &def.RuleOption{
+				LateTol:            cast.DurationConf(time.Second),
 				Concurrency:        1,
 				BufferLength:       1024,
-				CheckpointInterval: 300000, // 5 minutes
+				CheckpointInterval: cast.DurationConf(5 * time.Minute), // 5 minutes
 				SendError:          true,
-				Restart: &api.RestartStrategy{
+				RestartStrategy: &def.RestartStrategy{
 					Attempts:     0,
 					Delay:        1000,
 					Multiplier:   1,
@@ -126,13 +136,13 @@ func TestRuleOptionValidate(t *testing.T) {
 			},
 		},
 		{
-			s: &api.RuleOption{
-				LateTol:            1000,
+			s: &def.RuleOption{
+				LateTol:            cast.DurationConf(time.Second),
 				Concurrency:        1,
 				BufferLength:       1024,
-				CheckpointInterval: 300000, // 5 minutes
+				CheckpointInterval: cast.DurationConf(5 * time.Minute), // 5 minutes
 				SendError:          true,
-				Restart: &api.RestartStrategy{
+				RestartStrategy: &def.RestartStrategy{
 					Attempts:     3,
 					Delay:        1000,
 					Multiplier:   1,
@@ -140,13 +150,13 @@ func TestRuleOptionValidate(t *testing.T) {
 					JitterFactor: 0.1,
 				},
 			},
-			e: &api.RuleOption{
-				LateTol:            1000,
+			e: &def.RuleOption{
+				LateTol:            cast.DurationConf(time.Second),
 				Concurrency:        1,
 				BufferLength:       1024,
-				CheckpointInterval: 300000, // 5 minutes
+				CheckpointInterval: cast.DurationConf(5 * time.Minute), // 5 minutes
 				SendError:          true,
-				Restart: &api.RestartStrategy{
+				RestartStrategy: &def.RestartStrategy{
 					Attempts:     3,
 					Delay:        1000,
 					Multiplier:   1,
@@ -156,13 +166,13 @@ func TestRuleOptionValidate(t *testing.T) {
 			},
 		},
 		{
-			s: &api.RuleOption{
-				LateTol:            1000,
+			s: &def.RuleOption{
+				LateTol:            cast.DurationConf(time.Second),
 				Concurrency:        1,
 				BufferLength:       1024,
-				CheckpointInterval: 300000, // 5 minutes
+				CheckpointInterval: cast.DurationConf(5 * time.Minute), // 5 minutes
 				SendError:          true,
-				Restart: &api.RestartStrategy{
+				RestartStrategy: &def.RestartStrategy{
 					Attempts:     3,
 					Delay:        1000,
 					Multiplier:   1.5,
@@ -170,13 +180,13 @@ func TestRuleOptionValidate(t *testing.T) {
 					JitterFactor: 0.1,
 				},
 			},
-			e: &api.RuleOption{
-				LateTol:            1000,
+			e: &def.RuleOption{
+				LateTol:            cast.DurationConf(time.Second),
 				Concurrency:        1,
 				BufferLength:       1024,
-				CheckpointInterval: 300000, // 5 minutes
+				CheckpointInterval: cast.DurationConf(5 * time.Minute), // 5 minutes
 				SendError:          true,
-				Restart: &api.RestartStrategy{
+				RestartStrategy: &def.RestartStrategy{
 					Attempts:     3,
 					Delay:        1000,
 					Multiplier:   1.5,
@@ -186,13 +196,13 @@ func TestRuleOptionValidate(t *testing.T) {
 			},
 		},
 		{
-			s: &api.RuleOption{
-				LateTol:            1000,
+			s: &def.RuleOption{
+				LateTol:            cast.DurationConf(time.Second),
 				Concurrency:        1,
 				BufferLength:       1024,
-				CheckpointInterval: 300000, // 5 minutes
+				CheckpointInterval: cast.DurationConf(time.Second), // 5 minutes
 				SendError:          true,
-				Restart: &api.RestartStrategy{
+				RestartStrategy: &def.RestartStrategy{
 					Attempts:     -2,
 					Delay:        0,
 					Multiplier:   0,
@@ -200,13 +210,13 @@ func TestRuleOptionValidate(t *testing.T) {
 					JitterFactor: 1.1,
 				},
 			},
-			e: &api.RuleOption{
-				LateTol:            1000,
+			e: &def.RuleOption{
+				LateTol:            cast.DurationConf(time.Second),
 				Concurrency:        1,
 				BufferLength:       1024,
-				CheckpointInterval: 300000, // 5 minutes
+				CheckpointInterval: cast.DurationConf(time.Second), // 5 minutes
 				SendError:          true,
-				Restart: &api.RestartStrategy{
+				RestartStrategy: &def.RestartStrategy{
 					Attempts:     0,
 					Delay:        1000,
 					Multiplier:   2,
@@ -214,18 +224,21 @@ func TestRuleOptionValidate(t *testing.T) {
 					JitterFactor: 0.1,
 				},
 			},
-			err: "multiple errors",
+			err: "invalidRestartMultiplier:restart multiplier must be greater than 0\ninvalidRestartAttempts:restart attempts must be greater than 0\ninvalidRestartDelay:restart delay must be greater than 0\ninvalidRestartMaxDelay:restart maxDelay must be greater than 0\ninvalidRestartJitterFactor:restart jitterFactor must between [0, 1)",
 		},
 	}
 	fmt.Printf("The test bucket size is %d.\n\n", len(tests))
 	for i, tt := range tests {
-		err := ValidateRuleOption(tt.s)
-		if err != nil && tt.err == "" {
-			t.Errorf("%d: error mismatch:\n  exp=%s\n  got=%s\n\n", i, tt.err, err)
-		}
-		if !reflect.DeepEqual(tt.s, tt.e) {
-			t.Errorf("%d\n\nstmt mismatch:\n\nexp=%#v\n\ngot=%#v\n\n", i, tt.s, tt.e)
-		}
+		t.Run(fmt.Sprintf("test_%d", i), func(t *testing.T) {
+			err := ValidateRuleOption(tt.s)
+			if tt.err == "" {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.s, tt.e)
+			} else {
+				assert.Error(t, err)
+				assert.Equal(t, tt.err, err.Error())
+			}
+		})
 	}
 }
 
@@ -298,7 +311,7 @@ func TestSinkConf_Validate(t *testing.T) {
 				MaxDiskCache:         1024000,
 				BufferPageSize:       256,
 				EnableCache:          true,
-				ResendInterval:       -1,
+				ResendInterval:       cast.DurationConf(-time.Second),
 				CleanCacheAtStop:     true,
 				ResendAlterQueue:     true,
 				ResendPriority:       0,
@@ -421,4 +434,25 @@ func TestSyslogConf_Validate(t *testing.T) {
 			assert.Equal(t, tt.wantErr, err)
 		})
 	}
+}
+
+func TestLoad(t *testing.T) {
+	require.NoError(t, os.Setenv("KUIPER__RULE__RESTARTSTRATEGY__ATTEMPTS", "10"))
+	SetupEnv()
+	InitConf()
+	cpath, err := GetConfLoc()
+	require.NoError(t, err)
+	LoadConfigFromPath(path.Join(cpath, ConfFileName), &Config)
+	require.Equal(t, 10, Config.Rule.RestartStrategy.Attempts)
+}
+
+func TestJitterFactor(t *testing.T) {
+	b := `{"attempts": 0,
+            "delay": 1000,
+            "jitterFactor": 0.3,
+            "maxDelay": 30000,
+            "multiplier": 2}`
+	r := &def.RestartStrategy{}
+	require.NoError(t, json.Unmarshal([]byte(b), r))
+	require.Equal(t, 0.3, r.JitterFactor)
 }

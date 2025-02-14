@@ -49,6 +49,9 @@ default:
 #      body: '{"username": "admin","password": "123456"}'
 #      # 令牌的过期时间，以字符串表示，时间单位为秒，允许使用模板
 #      expire: '3600'
+#      # 请求头
+#      headers:
+#        Accept: application/json
 #    # 如何刷新令牌
 #    refresh:
 #      # 刷新令牌的 URL，总是使用 POST 方法发送请求
@@ -92,6 +95,9 @@ application_conf: #Conf_key
   - 如果运行从`/var/kuiper/bin`中运行`./kuiperd`，那么父目录为 `/var/kuiper/bin`。
 - `privateKeyPath`：私钥路径，示例值：`d3807d9fa5-private.pem.key`。可以是绝对路径，也可以是相对路径，具体可参考 `certificationPath`。
 - `rootCaPath`：根证书路径。可以是绝对路径，也可以是相对路径。
+- `certficationRaw`: 经过 base64 编码过的证书原文, 如果同时定义了 `certificationPath` 将会先用该参数。
+- `privateKeyRaw`: 经过 base64 编码过的密钥原文， 如果同时定义了 `privateKeyPath` 将会先用该参数。
+- `rootCARaw`: 经过 base64 编码过的根证书原文， 如果同时定义了 `rootCaPath` 将会先用该参数。
 - `insecureSkipVerify`：是否跳过证书验证。如设置为 `true`，TLS 接受服务器提供的任何证书以及该证书中的任何主机名。注意：此时，TLS 容易受到中间人攻击。默认值：`false`。
 
 #### OAuth 认证
@@ -132,6 +138,9 @@ OAuth 2.0 是一个授权协议，让 API 客户端有限度地访问网络服�
 
 - `PullTime`：本次拉取的 int64 格式时间戳。
 - `LastPullTime`：上次拉取的 int64 格式时间戳。
+- 来自 oAuth 的属性：oAuth 返回体的属性也可以使用。 例如，假设返回体为 `{"token": "xxxxxx"}`
+  ，则可通过 <span v-pre>`{{.token}}`</span> 访问
+  token 。
 
 若目标 HTTP 服务支持过滤开始和结束时间，可以使用这两个属性来实现增量拉取。
 

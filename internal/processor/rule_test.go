@@ -1,4 +1,4 @@
-// Copyright 2021-2022 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,16 +15,21 @@
 package processor
 
 import (
-	"reflect"
+	"fmt"
 	"testing"
+	"time"
 
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
 func TestRuleActionParse_Apply(t *testing.T) {
 	tests := []struct {
 		ruleStr string
-		result  *api.Rule
+		result  *def.Rule
 	}{
 		{
 			ruleStr: `{
@@ -55,7 +60,7 @@ func TestRuleActionParse_Apply(t *testing.T) {
 				}
 			  }
 			}`,
-			result: &api.Rule{
+			result: &def.Rule{
 				Triggered: true,
 				Id:        "ruleTest",
 				Sql:       "SELECT * from demo",
@@ -78,25 +83,26 @@ func TestRuleActionParse_Apply(t *testing.T) {
 						},
 					},
 				},
-				Options: &api.RuleOption{
+				Options: &def.RuleOption{
 					IsEventTime:        false,
-					LateTol:            1000,
+					LateTol:            cast.DurationConf(time.Second),
 					Concurrency:        1,
 					BufferLength:       1024,
 					SendMetaToSink:     false,
-					Qos:                api.AtMostOnce,
-					CheckpointInterval: 300000,
-					SendError:          true,
-					Restart: &api.RestartStrategy{
+					Qos:                def.AtMostOnce,
+					CheckpointInterval: cast.DurationConf(5 * time.Minute),
+					SendError:          false,
+					RestartStrategy: &def.RestartStrategy{
 						Attempts:     20,
-						Delay:        1000,
+						Delay:        cast.DurationConf(time.Second),
 						Multiplier:   2,
-						MaxDelay:     30000,
+						MaxDelay:     cast.DurationConf(30 * time.Second),
 						JitterFactor: 0.1,
 					},
 				},
 			},
-		}, {
+		},
+		{
 			ruleStr: `{
 				"id": "ruleTest2",
 				"sql": "SELECT * from demo",
@@ -120,10 +126,10 @@ func TestRuleActionParse_Apply(t *testing.T) {
 					"lateTolerance": 1000,
 					"bufferLength": 10240,
 					"qos": 2,
-					"checkpointInterval": 60000
+					"checkpointInterval": "60s"
 				}
 			}`,
-			result: &api.Rule{
+			result: &def.Rule{
 				Triggered: true,
 				Id:        "ruleTest2",
 				Sql:       "SELECT * from demo",
@@ -141,25 +147,26 @@ func TestRuleActionParse_Apply(t *testing.T) {
 						},
 					},
 				},
-				Options: &api.RuleOption{
+				Options: &def.RuleOption{
 					IsEventTime:        true,
-					LateTol:            1000,
+					LateTol:            cast.DurationConf(time.Second),
 					Concurrency:        1,
 					BufferLength:       10240,
 					SendMetaToSink:     false,
-					Qos:                api.ExactlyOnce,
-					CheckpointInterval: 60000,
-					SendError:          true,
-					Restart: &api.RestartStrategy{
+					Qos:                def.ExactlyOnce,
+					CheckpointInterval: cast.DurationConf(time.Minute),
+					SendError:          false,
+					RestartStrategy: &def.RestartStrategy{
 						Attempts:     0,
-						Delay:        1000,
+						Delay:        cast.DurationConf(time.Second),
 						Multiplier:   2,
-						MaxDelay:     30000,
+						MaxDelay:     cast.DurationConf(30 * time.Second),
 						JitterFactor: 0.1,
 					},
 				},
 			},
-		}, {
+		},
+		{
 			ruleStr: `{
 			  "id": "ruleTest",
 			  "sql": "SELECT * from demo",
@@ -168,7 +175,7 @@ func TestRuleActionParse_Apply(t *testing.T) {
 			  ],
               "triggered": false
 			}`,
-			result: &api.Rule{
+			result: &def.Rule{
 				Triggered: false,
 				Id:        "ruleTest",
 				Sql:       "SELECT * from demo",
@@ -177,20 +184,20 @@ func TestRuleActionParse_Apply(t *testing.T) {
 						"log": map[string]interface{}{},
 					},
 				},
-				Options: &api.RuleOption{
+				Options: &def.RuleOption{
 					IsEventTime:        false,
-					LateTol:            1000,
+					LateTol:            cast.DurationConf(time.Second),
 					Concurrency:        1,
 					BufferLength:       1024,
 					SendMetaToSink:     false,
-					Qos:                api.AtMostOnce,
-					CheckpointInterval: 300000,
-					SendError:          true,
-					Restart: &api.RestartStrategy{
+					Qos:                def.AtMostOnce,
+					CheckpointInterval: cast.DurationConf(5 * time.Minute),
+					SendError:          false,
+					RestartStrategy: &def.RestartStrategy{
 						Attempts:     0,
-						Delay:        1000,
+						Delay:        cast.DurationConf(time.Second),
 						Multiplier:   2,
-						MaxDelay:     30000,
+						MaxDelay:     cast.DurationConf(30 * time.Second),
 						JitterFactor: 0.1,
 					},
 				},
@@ -199,14 +206,33 @@ func TestRuleActionParse_Apply(t *testing.T) {
 	}
 
 	p := NewRuleProcessor()
-	for i, tt := range tests {
-		r, err := p.GetRuleByJson(tt.result.Id, tt.ruleStr)
-		if err != nil {
-			t.Errorf("get rule error: %s", err)
-		}
-		if !reflect.DeepEqual(tt.result, r) {
-			t.Errorf("%d \tresult mismatch:\n\nexp=%+v\n\ngot=%+v\n\n", i, tt.result, r)
-		}
+	for _, tt := range tests {
+		t.Run(tt.ruleStr, func(t *testing.T) {
+			r, err := p.GetRuleByJson(tt.result.Id, tt.ruleStr)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.result, r)
+		})
+	}
+}
+
+func TestRuleValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		ruleStr string
+		err     string
+	}{
+		{
+			name:    "missing id",
+			ruleStr: "{\n  \"sql\": \"SELECT * FROM my_stream\",\n  \"actions\": [\n    {\n      \"log\": {\n      }\n    }\n  ]\n}",
+			err:     "Missing rule id.",
+		},
+	}
+	p := NewRuleProcessor()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, e := p.GetRuleByJson("", tt.ruleStr)
+			require.EqualError(t, e, tt.err)
+		})
 	}
 }
 
@@ -217,11 +243,15 @@ func TestAllRules(t *testing.T) {
 		"rule3": "{\"id\": \"rule3\",\"sql\": \"SELECT * FROM demo\",\"actions\": [{  \"log\": {}}]}",
 	}
 	sp := NewStreamProcessor()
-	defer sp.db.Clean()
-	sp.ExecStmt(`CREATE STREAM demo () WITH (DATASOURCE="users", FORMAT="JSON")`)
+	defer func() {
+		err := sp.db.Clean()
+		assert.NoError(t, err)
+	}()
+	_, err := sp.ExecStmt(`CREATE STREAM demo () WITH (DATASOURCE="users", FORMAT="JSON")`)
+	assert.NoError(t, err)
 	p := NewRuleProcessor()
-	p.db.Clean()
-	defer p.db.Clean()
+	err = p.db.Clean()
+	assert.NoError(t, err)
 
 	for k, v := range expected {
 		_, err := p.ExecCreateWithValidation(k, v)
@@ -229,6 +259,7 @@ func TestAllRules(t *testing.T) {
 			t.Error(err)
 			return
 		}
+		// Intend to drop after all running done
 		defer p.ExecDrop(k)
 	}
 
@@ -237,7 +268,48 @@ func TestAllRules(t *testing.T) {
 		t.Error(err)
 		return
 	}
-	if !reflect.DeepEqual(all, expected) {
-		t.Errorf("Expect\t %v\nBut got\t%v", expected, all)
+	assert.Equal(t, expected, all)
+}
+
+func TestValidateRuleID(t *testing.T) {
+	testcases := []struct {
+		id  string
+		err error
+	}{
+		{
+			"abc",
+			nil,
+		},
+		{
+			"ABC",
+			nil,
+		},
+		{
+			"123",
+			nil,
+		},
+		{
+			"1/2",
+			fmt.Errorf("ruleID:%s contains invalidChar:%v", "1/2", "/"),
+		},
+		{
+			"1#2",
+			fmt.Errorf("ruleID:%s contains invalidChar:%v", "1#2", "#"),
+		},
+		{
+			"1%2",
+			fmt.Errorf("ruleID:%s contains invalidChar:%v", "1%2", "%"),
+		},
+		{
+			id:  "\t123",
+			err: fmt.Errorf("ruleID: %v should be trimed", "\t123"),
+		},
+		{
+			id:  "123\t",
+			err: fmt.Errorf("ruleID: %v should be trimed", "123\t"),
+		},
+	}
+	for _, tc := range testcases {
+		require.Equal(t, tc.err, validateRuleID(tc.id))
 	}
 }

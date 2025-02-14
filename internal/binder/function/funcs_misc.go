@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import (
 	b64 "encoding/base64"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"math"
 	"reflect"
@@ -30,16 +31,42 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/keyedstate"
-	"github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/keyedstate"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/props"
+	"github.com/lf-edge/ekuiper/v2/pkg/timex"
 )
 
 func registerMiscFunc() {
+	builtins["bypass"] = builtinFunc{
+		fType: ast.FuncTypeScalar,
+		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
+			return args[0], true
+		},
+		val: func(ctx api.FunctionContext, args []ast.Expr) error {
+			return nil
+		},
+		check: func(args []interface{}) (interface{}, bool) {
+			return args, false
+		},
+	}
+	builtins["props"] = builtinFunc{
+		fType: ast.FuncTypeScalar,
+		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
+			key, ok := args[0].(string)
+			if !ok {
+				return fmt.Errorf("invalid input %v: must be property name of string type", args[0]), false
+			}
+			return props.SC.Get(key)
+		},
+		val:   ValidateOneStrArg,
+		check: returnNilIfHasAnyNil,
+	}
 	builtins["cast"] = builtinFunc{
 		fType: ast.FuncTypeScalar,
 		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
@@ -138,18 +165,20 @@ func registerMiscFunc() {
 	builtins["chr"] = builtinFunc{
 		fType: ast.FuncTypeScalar,
 		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
-			if v, ok := args[0].(int); ok {
+			switch v := args[0].(type) {
+			case int:
 				return rune(v), true
-			} else if v, ok := args[0].(float64); ok {
-				temp := int(v)
-				return rune(temp), true
-			} else if v, ok := args[0].(string); ok {
+			case int64:
+				return rune(v), true
+			case float64:
+				return rune(v), true
+			case string:
 				if len(v) > 1 {
 					return fmt.Errorf("Parameter length cannot larger than 1."), false
 				}
 				r := []rune(v)
 				return r[0], true
-			} else {
+			default:
 				return fmt.Errorf("Only bigint, float and string type can be convert to char type."), false
 			}
 		},
@@ -248,16 +277,16 @@ func registerMiscFunc() {
 		fType: ast.FuncTypeScalar,
 		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
 			var v0 float64
-			if v1, ok := args[0].(int); ok {
-				v0 = float64(v1)
-			} else if v1, ok := args[0].(float64); ok {
-				v0 = v1
-			} else {
-				return fmt.Errorf("Only int and float type can be truncated."), false
+			v0, err := cast.ToFloat64(args[0], cast.CONVERT_SAMEKIND)
+			if err != nil {
+				return err, false
 			}
-			if v2, ok := args[1].(int); ok {
+			switch v2 := args[1].(type) {
+			case int:
 				return toFixed(v0, v2), true
-			} else {
+			case int64:
+				return toFixed(v0, int(v2)), true
+			default:
 				return fmt.Errorf("The 2nd parameter must be int value."), false
 			}
 		},
@@ -347,6 +376,15 @@ func registerMiscFunc() {
 		val:   ValidateOneStrArg,
 		check: returnNilIfHasAnyNil,
 	}
+	builtins["crc32"] = builtinFunc{
+		fType: ast.FuncTypeScalar,
+		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
+			arg0 := cast.ToStringAlways(args[0])
+			return fmt.Sprintf("%x", crc32.ChecksumIEEE([]byte(arg0))), true
+		},
+		val:   ValidateOneStrArg,
+		check: returnNilIfHasAnyNil,
+	}
 	builtinStatfulFuncs["compress"] = func() api.Function {
 		conf.Log.Infof("initializing compress function")
 		return &compressFunc{}
@@ -403,7 +441,7 @@ func registerMiscFunc() {
 	builtins["tstamp"] = builtinFunc{
 		fType: ast.FuncTypeScalar,
 		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
-			return conf.GetNowInMilli(), true
+			return timex.GetNowInMilli(), true
 		},
 		val: ValidateNoArg,
 	}

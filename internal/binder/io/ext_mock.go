@@ -1,4 +1,4 @@
-// Copyright 2021 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,15 +13,16 @@
 // limitations under the License.
 
 //go:build test
-// +build test
 
 package io
 
 import (
-	"github.com/lf-edge/ekuiper/internal/topo/topotest/mocknode"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/topo/topotest/mocknode"
+	"github.com/lf-edge/ekuiper/v2/pkg/modules"
 )
 
 func init() {
-	sources["mock"] = func() api.Source { return &mocknode.MockSource{} }
+	modules.RegisterSource("mock", func() api.Source { return &mocknode.MockSource{} })
 }

@@ -1,4 +1,4 @@
-// Copyright 2021 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,9 +17,8 @@ package main
 import (
 	"fmt"
 
+	"github.com/lf-edge/ekuiper/contract/v2/api"
 	"github.com/mmcloughlin/geohash"
-
-	"github.com/lf-edge/ekuiper/pkg/api"
 )
 
 type (
@@ -102,77 +101,77 @@ func (r *geohashNeighborsInt) IsAggregate() bool {
 	return false
 }
 
-func (r *geohashEncode) Validate(args []interface{}) error {
+func (r *geohashEncode) Validate(args []any) error {
 	if len(args) != 2 {
 		return fmt.Errorf("The geohashEncode function supports 2 parameters, but got %d", len(args))
 	}
 	return nil
 }
 
-func (r *geohashEncodeInt) Validate(args []interface{}) error {
+func (r *geohashEncodeInt) Validate(args []any) error {
 	if len(args) != 2 {
 		return fmt.Errorf("The geohashEncodeInt function supports 2 parameters, but got %d", len(args))
 	}
 	return nil
 }
 
-func (r *geohashDecode) Validate(args []interface{}) error {
+func (r *geohashDecode) Validate(args []any) error {
 	if len(args) != 1 {
 		return fmt.Errorf("The geohashDecode function supports 1 parameters, but got %d", len(args))
 	}
 	return nil
 }
 
-func (r *geohashDecodeInt) Validate(args []interface{}) error {
+func (r *geohashDecodeInt) Validate(args []any) error {
 	if len(args) != 1 {
 		return fmt.Errorf("The geohashDecodeInt function supports 1 parameters, but got %d", len(args))
 	}
 	return nil
 }
 
-func (r *geohashBoundingBox) Validate(args []interface{}) error {
+func (r *geohashBoundingBox) Validate(args []any) error {
 	if len(args) != 1 {
 		return fmt.Errorf("The geohashBoundingBox function supports 1 parameters, but got %d", len(args))
 	}
 	return nil
 }
 
-func (r *geohashBoundingBoxInt) Validate(args []interface{}) error {
+func (r *geohashBoundingBoxInt) Validate(args []any) error {
 	if len(args) != 1 {
 		return fmt.Errorf("The geohashBoundingBoxInt function supports 1 parameters, but got %d", len(args))
 	}
 	return nil
 }
 
-func (r *geohashNeighbor) Validate(args []interface{}) error {
+func (r *geohashNeighbor) Validate(args []any) error {
 	if len(args) != 2 {
 		return fmt.Errorf("The geohashNeighbor function supports 2 parameters, but got %d", len(args))
 	}
 	return nil
 }
 
-func (r *geohashNeighborInt) Validate(args []interface{}) error {
+func (r *geohashNeighborInt) Validate(args []any) error {
 	if len(args) != 2 {
 		return fmt.Errorf("The geohashNeighborInt function supports 2 parameters, but got %d", len(args))
 	}
 	return nil
 }
 
-func (r *geohashNeighbors) Validate(args []interface{}) error {
+func (r *geohashNeighbors) Validate(args []any) error {
 	if len(args) != 1 {
 		return fmt.Errorf("The geohashNeighbors function supports 1 parameters, but got %d", len(args))
 	}
 	return nil
 }
 
-func (r *geohashNeighborsInt) Validate(args []interface{}) error {
+func (r *geohashNeighborsInt) Validate(args []any) error {
 	if len(args) != 1 {
 		return fmt.Errorf("The geohashNeighborsInt function supports 1 parameters, but got %d", len(args))
 	}
 	return nil
 }
 
-func (r *geohashEncode) Exec(args []interface{}, _ api.FunctionContext) (interface{}, bool) {
+func (r *geohashEncode) Exec(args []any, _ api.FunctionContext) (any, bool) {
 	la, ok := args[0].(float64)
 	if !ok {
 		return fmt.Errorf("arg[0] is not a float, got %v", args[0]), false
@@ -184,7 +183,7 @@ func (r *geohashEncode) Exec(args []interface{}, _ api.FunctionContext) (interfa
 	return geohash.Encode(la, lo), true
 }
 
-func (r *geohashEncodeInt) Exec(args []interface{}, _ api.FunctionContext) (interface{}, bool) {
+func (r *geohashEncodeInt) Exec(args []any, _ api.FunctionContext) (any, bool) {
 	la, ok := args[0].(float64)
 	if !ok {
 		return fmt.Errorf("arg[0] is not a float, got %v", args[0]), false
@@ -196,7 +195,7 @@ func (r *geohashEncodeInt) Exec(args []interface{}, _ api.FunctionContext) (inte
 	return geohash.EncodeInt(la, lo), true
 }
 
-func (r *geohashDecode) Exec(args []interface{}, _ api.FunctionContext) (interface{}, bool) {
+func (r *geohashDecode) Exec(args []any, _ api.FunctionContext) (any, bool) {
 	hash, ok := args[0].(string)
 	if !ok || 0 == len(hash) {
 		return fmt.Errorf("arg[0] is not a string, got %v", args[0]), false
@@ -208,7 +207,7 @@ func (r *geohashDecode) Exec(args []interface{}, _ api.FunctionContext) (interfa
 	return position{Longitude: lo, Latitude: la}, true
 }
 
-func (r *geohashDecodeInt) Exec(args []interface{}, _ api.FunctionContext) (interface{}, bool) {
+func (r *geohashDecodeInt) Exec(args []any, _ api.FunctionContext) (any, bool) {
 	hash, ok := args[0].(uint64)
 	if !ok {
 		return fmt.Errorf("arg[0] is not a bigint, got %v", args[0]), false
@@ -217,7 +216,7 @@ func (r *geohashDecodeInt) Exec(args []interface{}, _ api.FunctionContext) (inte
 	return position{Longitude: lo, Latitude: la}, true
 }
 
-func (r *geohashBoundingBox) Exec(args []interface{}, _ api.FunctionContext) (interface{}, bool) {
+func (r *geohashBoundingBox) Exec(args []any, _ api.FunctionContext) (any, bool) {
 	hash, ok := args[0].(string)
 	if !ok || 0 == len(hash) {
 		return fmt.Errorf("arg[0] is not a string, got %v", args[0]), false
@@ -228,7 +227,7 @@ func (r *geohashBoundingBox) Exec(args []interface{}, _ api.FunctionContext) (in
 	return geohash.BoundingBox(hash), true
 }
 
-func (r *geohashBoundingBoxInt) Exec(args []interface{}, _ api.FunctionContext) (interface{}, bool) {
+func (r *geohashBoundingBoxInt) Exec(args []any, _ api.FunctionContext) (any, bool) {
 	hash, ok := args[0].(uint64)
 	if !ok {
 		return fmt.Errorf("arg[0] is not a bigint, got %v", args[0]), false
@@ -236,7 +235,7 @@ func (r *geohashBoundingBoxInt) Exec(args []interface{}, _ api.FunctionContext) 
 	return geohash.BoundingBoxInt(hash), true
 }
 
-func (r *geohashNeighbor) Exec(args []interface{}, _ api.FunctionContext) (interface{}, bool) {
+func (r *geohashNeighbor) Exec(args []any, _ api.FunctionContext) (any, bool) {
 	hash, ok := args[0].(string)
 	if !ok || 0 == len(hash) {
 		return fmt.Errorf("arg[0] is not a string, got %v", args[0]), false
@@ -258,7 +257,7 @@ func (r *geohashNeighbor) Exec(args []interface{}, _ api.FunctionContext) (inter
 	return geohash.Neighbor(hash, directionCode), true
 }
 
-func (r *geohashNeighborInt) Exec(args []interface{}, _ api.FunctionContext) (interface{}, bool) {
+func (r *geohashNeighborInt) Exec(args []any, _ api.FunctionContext) (any, bool) {
 	hash, ok := args[0].(uint64)
 	if !ok {
 		return fmt.Errorf("arg[0] is not a bigint, got %v", args[0]), false
@@ -276,7 +275,7 @@ func (r *geohashNeighborInt) Exec(args []interface{}, _ api.FunctionContext) (in
 	return geohash.NeighborInt(hash, directionCode), true
 }
 
-func (r *geohashNeighbors) Exec(args []interface{}, _ api.FunctionContext) (interface{}, bool) {
+func (r *geohashNeighbors) Exec(args []any, _ api.FunctionContext) (any, bool) {
 	hash, ok := args[0].(string)
 	if !ok || 0 == len(hash) {
 		return fmt.Errorf("arg[0] is not a string, got %v", args[0]), false
@@ -287,7 +286,7 @@ func (r *geohashNeighbors) Exec(args []interface{}, _ api.FunctionContext) (inte
 	return geohash.Neighbors(hash), true
 }
 
-func (r *geohashNeighborsInt) Exec(args []interface{}, _ api.FunctionContext) (interface{}, bool) {
+func (r *geohashNeighborsInt) Exec(args []any, _ api.FunctionContext) (any, bool) {
 	hash, ok := args[0].(uint64)
 	if !ok {
 		return fmt.Errorf("arg[0] is not a bigint, got %v", args[0]), false

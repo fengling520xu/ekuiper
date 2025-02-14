@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ package service
 
 import (
 	"archive/zip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -24,20 +25,24 @@ import (
 	"strings"
 	"sync"
 
-	kconf "github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/pkg/filex"
-	"github.com/lf-edge/ekuiper/internal/pkg/httpx"
-	"github.com/lf-edge/ekuiper/internal/pkg/store"
-	"github.com/lf-edge/ekuiper/internal/plugin"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/cast"
-	"github.com/lf-edge/ekuiper/pkg/kv"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/binder"
+	kconf "github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/filex"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/httpx"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/store"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/kv"
+	"github.com/lf-edge/ekuiper/v2/pkg/validate"
 )
 
 var (
 	once      sync.Once
 	mutex     sync.Mutex
-	singleton *Manager // Do not call this directly, use GetServiceManager
+	singleton *Manager           // Do not call this directly, use GetServiceManager
+	_         binder.FuncFactory = singleton
 )
 
 type Manager struct {
@@ -182,8 +187,10 @@ func (m *Manager) initFile(baseName string) error {
 			info.Interfaces[name].Functions = functions
 			for i, f := range functions {
 				err := m.functionKV.Set(f, &functionContainer{
+					FuncName:      f,
 					ServiceName:   serviceName,
 					InterfaceName: name,
+					Addr:          info.Interfaces[name].Addr,
 					MethodName:    methods[i],
 				})
 				if err != nil {
@@ -191,9 +198,12 @@ func (m *Manager) initFile(baseName string) error {
 				}
 			}
 		} else {
+			info.Interfaces[name].Functions = []string{name}
 			err := m.functionKV.Set(name, &functionContainer{
+				FuncName:      name,
 				ServiceName:   serviceName,
 				InterfaceName: name,
+				Addr:          info.Interfaces[name].Addr,
 				MethodName:    name,
 			})
 			if err != nil {
@@ -212,17 +222,6 @@ func (m *Manager) initFile(baseName string) error {
 
 func (m *Manager) HasFunctionSet(_ string) bool {
 	return false
-}
-
-func (m *Manager) FunctionPluginInfo(funcName string) (plugin.EXTENSION_TYPE, string, string) {
-	funcContainer, ok := m.getFunction(funcName)
-	if ok {
-		installScript := ""
-		m.serviceInstallKV.Get(funcContainer.ServiceName, &installScript)
-		return plugin.SERVICE_EXTENSION, funcContainer.ServiceName, installScript
-	} else {
-		return plugin.NONE_EXTENSION, "", ""
-	}
 }
 
 func (m *Manager) Function(name string) (api.Function, error) {
@@ -244,6 +243,17 @@ func (m *Manager) Function(name string) (api.Function, error) {
 		return nil, fmt.Errorf("fail to initiate the executor for %s: %v", f.InterfaceName, err)
 	}
 	return &ExternalFunc{exe: e, methodName: f.MethodName}, nil
+}
+
+func (m *Manager) FunctionPluginInfo(funcName string) (plugin.EXTENSION_TYPE, string, string) {
+	funcContainer, ok := m.getFunction(funcName)
+	if ok {
+		installScript := ""
+		m.serviceInstallKV.Get(funcContainer.ServiceName, &installScript)
+		return plugin.SERVICE_EXTENSION, funcContainer.ServiceName, installScript
+	} else {
+		return plugin.NONE_EXTENSION, "", ""
+	}
 }
 
 func (m *Manager) ConvName(funcName string) (string, bool) {
@@ -336,8 +346,8 @@ func (m *Manager) deleteFunc(service, name string) error {
 // ** CRUD of the service files **
 
 type ServiceCreationRequest struct {
-	Name string `json:"name"`
-	File string `json:"file"`
+	Name string `json:"name" yaml:"name"`
+	File string `json:"file" yaml:"file"`
 }
 
 func (s *ServiceCreationRequest) InstallScript() string {
@@ -354,6 +364,9 @@ func (m *Manager) List() ([]string, error) {
 
 func (m *Manager) Create(r *ServiceCreationRequest) error {
 	name, uri := r.Name, r.File
+	if err := validate.ValidateID(r.Name); err != nil {
+		return err
+	}
 	if ok, _ := m.serviceKV.Get(name, &serviceInfo{}); ok {
 		return fmt.Errorf("service %s exist", name)
 	}
@@ -447,8 +460,17 @@ func (m *Manager) unzip(name, src string) error {
 	return nil
 }
 
-func (m *Manager) ListFunctions() ([]string, error) {
-	return m.functionKV.Keys()
+func (m *Manager) ListFunctions() ([]*functionContainer, error) {
+	keys, err := m.functionKV.Keys()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]*functionContainer, len(keys))
+	for i, k := range keys {
+		f, _ := m.GetFunction(k)
+		result[i] = f
+	}
+	return result, nil
 }
 
 func (m *Manager) GetFunction(name string) (*functionContainer, error) {
@@ -502,10 +524,15 @@ func (m *Manager) servicesRegisterForImport(_, v string) error {
 	return nil
 }
 
-func (m *Manager) ImportServices(services map[string]string) map[string]string {
+func (m *Manager) ImportServices(ctx context.Context, services map[string]string) map[string]string {
 	errMap := map[string]string{}
 	_ = m.serviceStatusInstallKV.Clean()
 	for k, v := range services {
+		select {
+		case <-ctx.Done():
+			return errMap
+		default:
+		}
 		err := m.servicesRegisterForImport(k, v)
 		if err != nil {
 			_ = m.serviceStatusInstallKV.Set(k, err.Error())
@@ -515,9 +542,14 @@ func (m *Manager) ImportServices(services map[string]string) map[string]string {
 	return errMap
 }
 
-func (m *Manager) ImportPartialServices(services map[string]string) map[string]string {
+func (m *Manager) ImportPartialServices(ctx context.Context, services map[string]string) map[string]string {
 	errMap := map[string]string{}
 	for k, v := range services {
+		select {
+		case <-ctx.Done():
+			return errMap
+		default:
+		}
 		err := m.servicesRegisterForImport(k, v)
 		if err != nil {
 			errMap[k] = err.Error()

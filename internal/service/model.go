@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,6 +13,8 @@
 // limitations under the License.
 
 package service
+
+import "time"
 
 type (
 	protocol string
@@ -93,15 +95,16 @@ type interfaceInfo struct {
 type restOption struct {
 	InsecureSkipVerify bool              `json:"insecureSkipVerify"`
 	Headers            map[string]string `json:"headers"`
+	RetryCount         int               `json:"retryCount"`
+	RetryInterval      string            `json:"retryInterval"`
+
+	retryIntervalDuration time.Duration `json:"-"`
 }
 
 type functionContainer struct {
+	FuncName      string
 	ServiceName   string
 	InterfaceName string
+	Addr          string
 	MethodName    string
-}
-
-type FunctionExec struct {
-	Protocol protocol
-	Addr     string
 }

@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,63 +15,138 @@
 package neuron
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"time"
 
-	"github.com/lf-edge/ekuiper/internal/io/memory/pubsub"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/cast"
-	"github.com/lf-edge/ekuiper/pkg/infra"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+	"go.nanomsg.org/mangos/v3"
+
+	"github.com/lf-edge/ekuiper/v2/internal/topo/node/tracenode"
+	"github.com/lf-edge/ekuiper/v2/pkg/connection"
+	"github.com/lf-edge/ekuiper/v2/pkg/infra"
+	"github.com/lf-edge/ekuiper/v2/pkg/nng"
+	"github.com/lf-edge/ekuiper/v2/pkg/timex"
 )
 
-type sc struct {
-	Url          string `json:"url,omitempty"`
-	BufferLength int    `json:"bufferLength,omitempty"`
-}
+const (
+	DefaultNeuronUrl = "ipc:///tmp/neuron-ekuiper.ipc"
+	PROTOCOL         = "pair"
+)
+
+var (
+	NeuronTraceHeader           = []byte{0x0A, 0xCE}
+	NeuronTraceIDStartIndex     = len(NeuronTraceHeader)
+	NeuronTraceIDEndIndex       = NeuronTraceIDStartIndex + 16
+	NeuronTraceSpanIDStartIndex = NeuronTraceIDEndIndex
+	NeuronTraceSpanIDEndIndex   = NeuronTraceSpanIDStartIndex + 8
+	NeuronTraceHeaderLen        = 2 + 16 + 8
+)
 
 type source struct {
-	c *sc
+	c     *nng.SockConf
+	cli   *nng.Sock
+	props map[string]any
+	conId string
 }
 
-func (s *source) Configure(_ string, props map[string]interface{}) error {
-	cc := &sc{
-		BufferLength: 1024,
-		Url:          DefaultNeuronUrl,
-	}
-	err := cast.MapToStruct(props, cc)
+func (s *source) Provision(_ api.StreamContext, props map[string]any) error {
+	props["protocol"] = PROTOCOL
+	sc, err := nng.ValidateConf(props)
 	if err != nil {
 		return err
 	}
-	s.c = cc
+	s.c = sc
+	s.props = props
 	return nil
 }
 
-func (s *source) Open(ctx api.StreamContext, consumer chan<- api.SourceTuple, errCh chan<- error) {
-	_, err := createOrGetConnection(ctx, s.c.Url)
+func (s *source) ConnId(props map[string]any) string {
+	var url string
+	u, ok := props["url"]
+	if ok {
+		url = u.(string)
+	}
+	return "nng:" + PROTOCOL + url
+}
+
+func (s *source) SubId(_ map[string]any) string {
+	return "singleton"
+}
+
+func (s *source) Connect(ctx api.StreamContext, sc api.StatusChangeHandler) error {
+	ctx.GetLogger().Infof("Connecting to neuron")
+	cw, err := connection.FetchConnection(ctx, PROTOCOL+s.c.Url, "nng", s.props, sc)
 	if err != nil {
-		infra.DrainError(ctx, err, errCh)
-		return
+		return err
 	}
-	defer closeConnection(ctx, s.c.Url)
-	ch := pubsub.CreateSub(TopicPrefix+s.c.Url, nil, fmt.Sprintf("%s_%s_%d", ctx.GetRuleId(), ctx.GetOpId(), ctx.GetInstanceId()), s.c.BufferLength)
-	defer pubsub.CloseSourceConsumerChannel(TopicPrefix+s.c.Url, fmt.Sprintf("%s_%s_%d", ctx.GetRuleId(), ctx.GetOpId(), ctx.GetInstanceId()))
-	for {
-		select {
-		case v, opened := <-ch:
-			if !opened {
-				return
+	s.conId = cw.ID
+	cli, err := cw.Wait(ctx)
+	if cli == nil {
+		return fmt.Errorf("neuron client not ready: %v", err)
+	}
+	s.cli = cli.(*nng.Sock)
+	return nil
+}
+
+func (s *source) Subscribe(ctx api.StreamContext, ingest api.BytesIngest, ingestErr api.ErrorIngest) error {
+	ctx.GetLogger().Infof("neuron source receiving loop started")
+	go func() {
+		err := infra.SafeRun(func() error {
+			connected := true
+			for {
+				// no receiving deadline, will wait until the socket closed
+				if msg, err := s.cli.Recv(); err == nil {
+					connected = true
+					ctx.GetLogger().Debugf("nng received message %s", string(msg))
+					rawData, meta := extractTraceMeta(ctx, msg)
+					ingest(ctx, rawData, meta, timex.GetNow())
+				} else if err == mangos.ErrClosed {
+					if connected {
+						ctx.GetLogger().Infof("neuron connection closed, retry after 1 second")
+						ingestErr(ctx, errors.New("neuron connection closed"))
+						time.Sleep(1 * time.Second)
+						connected = false
+					}
+					continue
+				}
 			}
-			consumer <- v
-		case <-ctx.Done():
-			return
+		})
+		if err != nil {
+			ctx.GetLogger().Errorf("exit neuron source subscribe for %v", err)
 		}
-	}
+	}()
+	return nil
 }
 
 func (s *source) Close(ctx api.StreamContext) error {
 	ctx.GetLogger().Infof("closing neuron source")
+	_ = connection.DetachConnection(ctx, s.conId)
+	s.cli = nil
 	return nil
 }
 
-func GetSource() *source {
+func GetSource() api.Source {
 	return &source{}
+}
+
+func extractTraceMeta(ctx api.StreamContext, data []byte) ([]byte, map[string]interface{}) {
+	rawData := data
+	// extract rawData
+	if len(data) > NeuronTraceHeaderLen && bytes.Equal(data[:2], NeuronTraceHeader) {
+		rawData = data[NeuronTraceHeaderLen:]
+	}
+	if !ctx.IsTraceEnabled() {
+		return rawData, nil
+	}
+	meta := make(map[string]any)
+	meta["sourceKind"] = "neuron"
+	if len(data) > NeuronTraceHeaderLen && bytes.Equal(data[:2], NeuronTraceHeader) {
+		traceID := data[NeuronTraceIDStartIndex:NeuronTraceIDEndIndex]
+		spanID := data[NeuronTraceSpanIDStartIndex:NeuronTraceSpanIDEndIndex]
+		// by setting traceId meta, source node knows how to construct a trace
+		meta["traceId"] = tracenode.BuildTraceParentId([16]byte(traceID), [8]byte(spanID))
+	}
+	return rawData, meta
 }

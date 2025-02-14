@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@ package planner
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -25,11 +24,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/lf-edge/ekuiper/internal/pkg/store"
-	"github.com/lf-edge/ekuiper/internal/testx"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/store"
+	"github.com/lf-edge/ekuiper/v2/internal/testx"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/errorx"
 )
 
 func init() {
@@ -46,13 +46,6 @@ func newErrorStruct(err string) *errorStruct {
 	}
 }
 
-func newErrorStructWithS(err string, serr string) *errorStruct {
-	return &errorStruct{
-		err:  err,
-		serr: &serr,
-	}
-}
-
 func (e *errorStruct) Serr() string {
 	if e.serr != nil {
 		return *e.serr
@@ -66,7 +59,7 @@ var tests = []struct {
 }{
 	{ // 0
 		sql: `SELECT count(*) FROM src1 HAVING sin(temp) > 0.3`,
-		r:   newErrorStruct("Not allowed to call non-aggregate functions in HAVING clause."),
+		r:   newErrorStruct("Not allowed to call non-aggregate functions in HAVING clause: binaryExpr:{ Call:{ name:sin, args:[src1.temp] } > 0.300000 }."),
 	},
 	{ // 1
 		sql: `SELECT count(*) FROM src1 WHERE name = "dname" HAVING sin(count(*)) > 0.3`,
@@ -82,11 +75,11 @@ var tests = []struct {
 	},
 	{ // 4
 		sql: `SELECT count(*) as c FROM src1 WHERE name = "dname" GROUP BY sin(c)`,
-		r:   newErrorStruct("Not allowed to call aggregate functions in GROUP BY clause."),
+		r:   newErrorStruct("Not allowed to call aggregate functions in GROUP BY clause: Call:{ name:sin, args:[$$alias.c,aliasRef:Call:{ name:count, args:[*] }] }."),
 	},
 	{ // 5
 		sql: `SELECT count(*) as c FROM src1 WHERE name = "dname" HAVING sum(c) > 0.3 OR sin(temp) > 3`,
-		r:   newErrorStruct("Not allowed to call non-aggregate functions in HAVING clause."),
+		r:   newErrorStruct("Not allowed to call non-aggregate functions in HAVING clause: binaryExpr:{ binaryExpr:{ Call:{ name:sum, args:[$$alias.c,aliasRef:Call:{ name:count, args:[*] }] } > 0.300000 } OR binaryExpr:{ Call:{ name:sin, args:[src1.temp] } > 3 } }."),
 	},
 	{ // 6
 		sql: `SELECT collect(*) as c FROM src1 WHERE name = "dname" HAVING c[2]->temp > 20 AND sin(c[0]->temp) > 0`,
@@ -94,7 +87,7 @@ var tests = []struct {
 	},
 	{ // 7
 		sql: `SELECT collect(*) as c FROM src1 WHERE name = "dname" HAVING c[2]->temp + temp > 0`,
-		r:   newErrorStruct("Not allowed to call non-aggregate functions in HAVING clause."),
+		r:   newErrorStruct("Not allowed to call non-aggregate functions in HAVING clause: binaryExpr:{ binaryExpr:{ binaryExpr:{ binaryExpr:{ $$alias.c,aliasRef:Call:{ name:collect, args:[*] }[2] } -> jsonFieldName:temp } + src1.temp } > 0 }."),
 	},
 	{ // 8
 		sql: `SELECT deduplicate(temp, true) as de FROM src1 HAVING cardinality(de) > 20`,
@@ -105,7 +98,7 @@ var tests = []struct {
 		r:   newErrorStruct(""),
 	},
 	{ // 10
-		sql: `SELECT sum(temp) as temp1, count(temp) as temp FROM src1`,
+		sql: `SELECT count(temp) as temp, sum(temp) as temp1 FROM src1`,
 		r:   newErrorStruct("invalid argument for func sum: aggregate argument is not allowed"),
 	},
 	{ // 11
@@ -188,7 +181,7 @@ func TestCheckTopoSort(t *testing.T) {
 	sql := "select latest(a) as a from src1"
 	stmt, err := xsql.NewParser(strings.NewReader(sql)).Parse()
 	require.NoError(t, err)
-	_, err = createLogicalPlan(stmt, &api.RuleOption{
+	_, err = createLogicalPlan(stmt, &def.RuleOption{
 		IsEventTime:        false,
 		LateTol:            0,
 		Concurrency:        0,
@@ -198,11 +191,13 @@ func TestCheckTopoSort(t *testing.T) {
 		CheckpointInterval: 0,
 		SendError:          true,
 	}, store)
-	require.Equal(t, errors.New("unknown field a"), err)
+	errWithCode, ok := err.(errorx.ErrorWithCode)
+	require.True(t, ok)
+	require.Equal(t, errorx.PlanError, errWithCode.Code())
+	require.Equal(t, "unknown field a", errWithCode.Error())
 }
 
 func Test_validation(t *testing.T) {
-	tests[10].r = newErrorStruct("invalid argument for func sum: aggregate argument is not allowed")
 	store, err := store.GetKV("stream")
 	if err != nil {
 		t.Error(err)
@@ -248,7 +243,7 @@ func Test_validation(t *testing.T) {
 			t.Errorf("%d. %q: error compile sql: %s\n", i, tt.sql, err)
 			continue
 		}
-		_, err = createLogicalPlan(stmt, &api.RuleOption{
+		_, err = createLogicalPlan(stmt, &def.RuleOption{
 			IsEventTime:        false,
 			LateTol:            0,
 			Concurrency:        0,
@@ -304,7 +299,7 @@ func Test_validationSchemaless(t *testing.T) {
 			t.Errorf("%d. %q: error compile sql: %s\n", i, tt.sql, err)
 			continue
 		}
-		_, err = createLogicalPlan(stmt, &api.RuleOption{
+		_, err = createLogicalPlan(stmt, &def.RuleOption{
 			IsEventTime:        false,
 			LateTol:            0,
 			Concurrency:        0,
@@ -315,9 +310,6 @@ func Test_validationSchemaless(t *testing.T) {
 			SendError:          true,
 		}, store)
 		serr := tt.r.Serr()
-		if tt.sql == "SELECT sum(temp) as temp1, count(temp) as temp FROM src1" {
-			serr = ""
-		}
 		require.Equal(t, serr, testx.Errstring(err))
 	}
 }
@@ -489,4 +481,33 @@ func TestConvertStreamInfo(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateStmt(t *testing.T) {
+	store, err := store.GetKV("stream")
+	require.NoError(t, err)
+	streamSqls := map[string]string{
+		"src1": `CREATE STREAM src1 (
+					id1 BIGINT,
+					temp BIGINT,
+					name string,
+					next STRUCT(NAME STRING, NID BIGINT)
+				) WITH (DATASOURCE="src1", FORMAT="json", KEY="ts");`,
+	}
+	types := map[string]ast.StreamType{
+		"src1": ast.TypeStream,
+	}
+	for name, sql := range streamSqls {
+		s, err := json.Marshal(&xsql.StreamInfo{
+			StreamType: types[name],
+			Statement:  sql,
+		})
+		require.NoError(t, err)
+		store.Set(name, string(s))
+	}
+	sql := "select a from src1 group by b"
+	stmt, err := xsql.NewParser(strings.NewReader(sql)).Parse()
+	require.NoError(t, err)
+	err = validate(stmt)
+	require.Error(t, err)
 }

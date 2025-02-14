@@ -1,4 +1,4 @@
-// Copyright 2021-2022 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,14 +15,19 @@
 package checkpoint
 
 import (
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
 )
 
 type StreamTask interface {
-	Broadcast(data interface{}) error
 	GetName() string
 	GetStreamContext() api.StreamContext
-	SetQos(api.Qos)
+	SetQos(qos def.Qos)
+}
+
+type NonSinkTask interface {
+	Broadcast(data any)
 }
 
 type NonSourceTask interface {
@@ -31,6 +36,10 @@ type NonSourceTask interface {
 	AddInputCount()
 
 	SetBarrierHandler(BarrierHandler)
+}
+
+type SourceSubTopoTask interface {
+	EnableCheckpoint(sources *[]StreamTask, ops *[]NonSourceTask)
 }
 
 type SinkTask interface {
@@ -53,6 +62,7 @@ const (
 	STOP Message = iota
 	ACK
 	DEC
+	ForceSaveState
 )
 
 type Signal struct {

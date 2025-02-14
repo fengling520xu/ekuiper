@@ -127,6 +127,10 @@
           "path": "guide/rules/state_and_fault_tolerance"
         },
         {
+          "title": "增量计算",
+          "path": "guide/rules/incremental"
+        },
+        {
           "title": "序列化",
           "path": "guide/serialization/serialization",
           "collapsed": true,
@@ -158,6 +162,10 @@
               "path": "guide/ai/tensorflow_lite"
             },
             {
+              "title": "使用 onnx 原生插件调用 AI 模型",
+              "path": "guide/ai/onnx"
+            },
+            {
               "title": "使用外部函数调用 tensorflow_lite AI 模型",
               "path": "guide/ai/tensorflow_lite_external_function_tutorial"
             }
@@ -173,6 +181,10 @@
           "title": "数据源",
           "path": "guide/sources/overview",
           "children": [
+            {
+              "title": "降采样",
+              "path": "guide/sources/down_sample"
+            },
             {
               "title": "内置源",
               "collapsed": true,
@@ -212,6 +224,14 @@
                 {
                   "title": "RedisSub 数据源",
                   "path": "guide/sources/builtin/redisSub"
+                },
+                {
+                  "title": "Websocket 数据源",
+                  "path": "guide/sources/builtin/websocket"
+                },
+                {
+                  "title": "模拟器数据源",
+                  "path": "guide/sources/builtin/simulator"
                 }
               ]
             },
@@ -234,6 +254,10 @@
                 {
                   "title": "随机数据产生器源",
                   "path": "guide/sources/plugin/random"
+                },
+                {
+                  "title": "Kafka 数据源",
+                  "path": "guide/sources/plugin/kafka"
                 }
               ]
             }
@@ -288,6 +312,10 @@
                   "path": "guide/sinks/builtin/log"
                 },
                 {
+                  "title": "Websocket Sink",
+                  "path": "guide/sinks/builtin/websocket"
+                },
+                {
                   "title": "Nop Sink",
                   "path": "guide/sinks/builtin/nop"
                 }
@@ -310,10 +338,6 @@
                   "path": "guide/sinks/plugin/influx2"
                 },
                 {
-                  "title": "TDengine Sink",
-                  "path": "guide/sinks/plugin/tdengine"
-                },
-                {
                   "title": "Image Sink",
                   "path": "guide/sinks/plugin/image"
                 },
@@ -328,6 +352,10 @@
               ]
             }
           ]
+        },
+        {
+          "title": "连接管理",
+          "path": "guide/connections/overview"
         }
       ]
     },
@@ -342,8 +370,16 @@
             {
               "title": "合并单流多设备数据",
               "path": "example/data_merge/merge_single_stream"
+            },
+            {
+              "title": "合并多个数据流",
+              "path": "example/data_merge/merge_multi_stream"
             }
           ]
+        },
+        {
+          "title": "捕捉数据变化",
+          "path": "example/change_data_capture"
         }
       ]
     },
@@ -378,6 +414,14 @@
         {
           "title": "监控",
           "path": "operation/usage/monitor_with_prometheus"
+        },
+        {
+          "title": "错误码",
+          "path": "operation/usage/error_code"
+        },
+        {
+          "title": "数据链路追踪",
+          "path": "operation/usage/trace_data"
         }
       ]
     },
@@ -472,6 +516,14 @@
           "path": "api/restapi/configKey"
         },
         {
+          "title": "连接管理",
+          "path": "api/restapi/connection"
+        },
+        {
+          "title": "脚本函数管理",
+          "path": "api/restapi/udf"
+        },
+        {
           "title": "外部函数管理",
           "path": "api/restapi/services"
         },
@@ -494,6 +546,14 @@
         {
             "title": "动态重载配置",
             "path": "api/restapi/configs"
+        },
+        {
+          "title": "规则试运行",
+          "path": "api/restapi/ruletest"
+        },
+        {
+          "title": "数据链路追踪",
+          "path": "api/restapi/trace"
         }
       ]
     },
@@ -517,6 +577,10 @@
         {
           "title": "插件管理",
           "path": "api/cli/plugins"
+        },
+        {
+          "title": "脚本函数管理",
+          "path": "api/cli/scripts"
         },
         {
           "title": "外部服务",
@@ -558,11 +622,11 @@
               "path": "extension/native/develop/function"
             },
             {
-              "title": "Sink 插件开发",
+              "title": "目标 (Sink) 插件开发",
               "path": "extension/native/develop/sink"
             },
             {
-              "title": "源插件开发",
+              "title": "源 (Source) 插件开发",
               "path": "extension/native/develop/source"
             }
           ]
@@ -581,6 +645,10 @@
               "path": "extension/portable/python_sdk"
             }
           ]
+        },
+        {
+          "title": "脚本函数",
+          "path": "extension/script/overview"
         },
         {
           "title": "外部函数",
@@ -835,6 +903,10 @@
           "path": "guide/rules/state_and_fault_tolerance"
         },
         {
+          "title": "Incremental Calculation",
+          "path": "guide/rules/incremental"
+        },
+        {
           "title": "Serialization",
           "path": "guide/serialization/serialization",
           "collapsed": true,
@@ -866,6 +938,10 @@
               "path": "guide/ai/tensorflow_lite"
             },
             {
+              "title": "Running AI Model with Onnx Function Plugin",
+              "path": "guide/ai/onnx"
+            },
+            {
               "title": "Running tensorflow_lite AI Model with External Function",
               "path": "guide/ai/tensorflow_lite_external_function_tutorial"
             }
@@ -881,6 +957,10 @@
           "title": "Source Connector",
           "path": "guide/sources/overview",
           "children": [
+            {
+              "title": "Down sampling",
+              "path": "guide/sources/down_sample"
+            },
             {
               "title": "Built-in Sources",
               "collapsed": true,
@@ -920,6 +1000,14 @@
                 {
                   "title": "RedisSub Source",
                   "path": "guide/sources/builtin/redisSub"
+                },
+                {
+                  "title": "Websocket Source",
+                  "path": "guide/sources/builtin/websocket"
+                },
+                {
+                  "title": "Simulator Source",
+                  "path": "guide/sources/builtin/simulator"
                 }
               ]
             },
@@ -942,6 +1030,10 @@
                 {
                   "title": "Random Source",
                   "path": "guide/sources/plugin/random"
+                },
+                {
+                  "title": "Kafka Source",
+                  "path": "guide/sources/plugin/kafka"
                 }
               ]
             }
@@ -996,6 +1088,10 @@
                   "path": "guide/sinks/builtin/log"
                 },
                 {
+                  "title": "Websocket Sink",
+                  "path": "guide/sinks/builtin/websocket"
+                },
+                {
                   "title": "Nop Sink",
                   "path": "guide/sinks/builtin/nop"
                 }
@@ -1018,10 +1114,6 @@
                   "path": "guide/sinks/plugin/influx2"
                 },
                 {
-                  "title": "TDengine Sink",
-                  "path": "guide/sinks/plugin/tdengine"
-                },
-                {
                   "title": "Image Sink",
                   "path": "guide/sinks/plugin/image"
                 },
@@ -1036,6 +1128,10 @@
               ]
             }
           ]
+        },
+        {
+          "title": "Connection Management",
+          "path": "guide/connections/overview"
         }
       ]
     },
@@ -1048,8 +1144,16 @@
           "path": "example/howto"
         },
         {
-          "title": "Merge multiple devices' data in single stream",
+          "title": "Merge Multiple Devices' Data in a Single Stream",
           "path": "example/data_merge/merge_single_stream"
+        },
+        {
+          "title": "Merge Data in Multiple Streams",
+          "path": "example/data_merge/merge_multi_stream"
+        },
+        {
+          "title": "Capture Data Change",
+          "path": "example/change_data_capture"
         }
       ]
     },
@@ -1144,6 +1248,10 @@
               "path": "operation/manager-ui/plugins_in_manager"
             }
           ]
+        },
+        {
+          "title": "Tracing Data",
+          "path": "operation/usage/trace_data"
         }
       ]
     },
@@ -1177,6 +1285,14 @@
           "path": "api/restapi/configKey"
         },
         {
+          "title": "Connections",
+          "path": "api/restapi/connection"
+        },
+        {
+          "title": "Script Functions",
+          "path": "api/restapi/udf"
+        },
+        {
           "title": "External Services",
           "path": "api/restapi/services"
         },
@@ -1199,6 +1315,14 @@
         {
           "title": "Dynamic Reload Configs",
           "path": "api/restapi/configs"
+        },
+        {
+          "title": "Rule Test",
+          "path": "api/restapi/ruletest"
+        },
+        {
+          "title": "Trace Data",
+          "path": "api/restapi/trace"
         }
       ]
     },
@@ -1222,6 +1346,10 @@
         {
           "title": "Plugins",
           "path": "api/cli/plugins"
+        },
+        {
+          "title": "Script Functions",
+          "path": "api/cli/scripts"
         },
         {
           "title": "External Services",
@@ -1286,6 +1414,10 @@
               "path": "extension/portable/python_sdk"
             }
           ]
+        },
+        {
+          "title": "Script Function",
+          "path": "extension/script/overview"
         },
         {
           "title": "Plugin Management",

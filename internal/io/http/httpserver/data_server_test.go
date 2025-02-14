@@ -15,95 +15,61 @@
 package httpserver
 
 import (
-	"bytes"
 	"fmt"
 	"net/http"
 	"testing"
 	"time"
 
-	"github.com/lf-edge/ekuiper/internal/testx"
+	"github.com/stretchr/testify/require"
+
+	"github.com/lf-edge/ekuiper/v2/internal/testx"
 )
 
-var body = []byte(`{
-        "title": "Post title",
-        "body": "Post description",
-        "userId": 1
-    }`)
-
 func TestEndpoints(t *testing.T) {
-	testx.InitEnv()
+	ip := "127.0.0.1"
+	port := 10082
+	InitGlobalServerManager(ip, port, nil)
+	defer ShutDown()
 	endpoints := []string{
 		"/ee1", "/eb2", "/ec3",
 	}
-	RegisterEndpoint(endpoints[0], "POST", "application/json")
-	RegisterEndpoint(endpoints[1], "PUT", "application/json")
-	RegisterEndpoint(endpoints[2], "POST", "application/json")
+	RegisterEndpoint(endpoints[0], "POST")
+	RegisterEndpoint(endpoints[1], "PUT")
+	RegisterEndpoint(endpoints[2], "POST")
+	require.Equal(t, map[string]struct{}{
+		"/ee1$$POST": {}, "/eb2$$PUT": {}, "/ec3$$POST": {},
+	}, GetEndpoints())
+	UnregisterEndpoint(endpoints[0], "POST")
+	UnregisterEndpoint(endpoints[1], "PUT")
+	UnregisterEndpoint(endpoints[2], "POST")
+	require.Equal(t, map[string]struct{}{}, GetEndpoints())
 
-	if server == nil || router == nil {
-		t.Error("server or router is nil after registering")
-		return
-	}
-	if refCount != 3 {
-		t.Error("refCount is not 3 after registering")
-		return
-	}
-	UnregisterEndpoint(endpoints[0])
-	UnregisterEndpoint(endpoints[1])
-	UnregisterEndpoint(endpoints[2])
-	if refCount != 0 {
-		t.Error("refCount is not 0 after unregistering")
-		return
-	}
-	if server != nil || router != nil {
-		t.Error("server or router is not nil after unregistering")
-		return
-	}
-	urlPrefix := "http://localhost:10081"
-
+	urlPrefix := fmt.Sprintf("http://%v:%v", ip, port)
 	client := &http.Client{}
-
-	RegisterEndpoint(endpoints[0], "POST", "application/json")
-	_, _, err := RegisterEndpoint(endpoints[0], "PUT", "application/json")
-	if err != nil {
-		t.Error("RegisterEndpoint should not return error for same endpoint")
-	}
-	RegisterEndpoint(endpoints[1], "PUT", "application/json")
+	RegisterEndpoint(endpoints[0], "POST")
+	RegisterEndpoint(endpoints[1], "PUT")
+	var err error
 	// wait for http server start
 	for i := 0; i < 3; i++ {
-		err = testHttp(client, urlPrefix+endpoints[0], "POST")
+		err = testx.TestHttp(client, urlPrefix+endpoints[1], "PUT")
 		if err == nil {
 			break
 		}
 		time.Sleep(time.Millisecond * 500)
 	}
-
-	if err != nil {
-		t.Error("httptest still fails after 3 times :", err.Error())
-	}
-
-	err = testHttp(client, urlPrefix+endpoints[1], "PUT")
-	if err != nil {
-		t.Error(err)
-	}
-
-	RegisterEndpoint(endpoints[2], "POST", "application/json")
-	err = testHttp(client, urlPrefix+endpoints[2], "POST")
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 }
 
-func testHttp(client *http.Client, url string, method string) error {
-	r, err := http.NewRequest(method, url, bytes.NewBuffer(body))
-	if err != nil {
-		return err
+func GetEndpoints() map[string]struct{} {
+	return manager.GetEndpoints()
+}
+
+func (m *GlobalServerManager) GetEndpoints() map[string]struct{} {
+	ma := make(map[string]struct{})
+	m.Lock()
+	defer m.Unlock()
+	for k := range m.endpoint {
+		ma[k] = struct{}{}
 	}
-	resp, err := client.Do(r)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("status code is not 200 for %s", url)
-	}
-	return nil
+	return ma
 }

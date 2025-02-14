@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build prometheus || !core
-// +build prometheus !core
-
 package server
 
 import (
@@ -26,7 +23,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
 )
 
 func init() {
@@ -49,7 +46,7 @@ func (p *promeComp) rest(r *mux.Router) {
 	if portPrometheus == portRest {
 		r.Handle("/metrics", promhttp.Handler())
 		msg := fmt.Sprintf("Register prometheus metrics to http://localhost:%d/metrics", portPrometheus)
-		logger.Infof(msg)
+		logger.Info(msg)
 		fmt.Println(msg)
 	}
 }
@@ -79,7 +76,7 @@ func (p *promeComp) serve() {
 			}()
 			p.s = srvPrometheus
 			msg := fmt.Sprintf("Serving prometheus metrics on port http://localhost:%d/metrics", portPrometheus)
-			logger.Infof(msg)
+			logger.Info(msg)
 			fmt.Println(msg)
 		}
 	}

@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,11 +22,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	kctx "github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/internal/topo/state"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	kctx "github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/state"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
 )
 
 func TestAggExec(t *testing.T) {
@@ -60,7 +60,7 @@ func TestAggExec(t *testing.T) {
 	}
 	contextLogger := conf.Log.WithField("rule", "testExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 2)
 	tests := []struct {
 		args    []interface{}
@@ -87,7 +87,8 @@ func TestAggExec(t *testing.T) {
 			stddevs: fmt.Errorf("requires float64 slice but found []interface {}([foo bar self])"),
 			var1:    fmt.Errorf("requires float64 slice but found []interface {}([foo bar self])"),
 			vars:    fmt.Errorf("requires float64 slice but found []interface {}([foo bar self])"),
-		}, { // 1
+		},
+		{ // 1
 			args: []interface{}{
 				[]interface{}{
 					int64(100),
@@ -102,7 +103,8 @@ func TestAggExec(t *testing.T) {
 			stddevs: float64(50),
 			var1:    1666.6666666666667,
 			vars:    float64(2500),
-		}, { // 2
+		},
+		{ // 2
 			args: []interface{}{
 				[]interface{}{
 					float64(100),
@@ -117,7 +119,8 @@ func TestAggExec(t *testing.T) {
 			stddevs: float64(50),
 			var1:    1666.6666666666667,
 			vars:    float64(2500),
-		}, { // 3
+		},
+		{ // 3
 			args: []interface{}{
 				[]interface{}{
 					100, 150, 200,
@@ -130,7 +133,8 @@ func TestAggExec(t *testing.T) {
 			stddevs: float64(50),
 			var1:    1666.6666666666667,
 			vars:    float64(2500),
-		}, { // 4
+		},
+		{ // 4
 			args: []interface{}{
 				[]interface{}{},
 			},
@@ -141,6 +145,20 @@ func TestAggExec(t *testing.T) {
 			stddevs: nil,
 			var1:    nil,
 			vars:    nil,
+		},
+		{ // 5 This is the test case for nil values
+			args: []interface{}{
+				[]interface{}{
+					100, 150, nil, 200, nil,
+				},
+			},
+			avg:     int64(150),
+			max:     int64(200),
+			min:     int64(100),
+			stddev:  40.824829046386306,
+			stddevs: float64(50),
+			var1:    1666.6666666666667,
+			vars:    float64(2500),
 		},
 	}
 	for i, tt := range tests {
@@ -186,7 +204,7 @@ func TestPercentileExec(t *testing.T) {
 	}
 	contextLogger := conf.Log.WithField("rule", "testExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 2)
 	tests := []struct {
 		args  []interface{}
@@ -204,7 +222,8 @@ func TestPercentileExec(t *testing.T) {
 			},
 			pCont: fmt.Errorf("requires float64 slice but found []interface {}([foo bar self])"),
 			pDisc: fmt.Errorf("requires float64 slice but found []interface {}([foo bar self])"),
-		}, { // 1
+		},
+		{ // 1
 			args: []interface{}{
 				[]interface{}{
 					int64(100),
@@ -214,7 +233,8 @@ func TestPercentileExec(t *testing.T) {
 			},
 			pCont: fmt.Errorf("Expect 2 arguments but found 1."),
 			pDisc: fmt.Errorf("Expect 2 arguments but found 1."),
-		}, { // 2
+		},
+		{ // 2
 			args: []interface{}{
 				[]interface{}{
 					int64(100),
@@ -225,7 +245,8 @@ func TestPercentileExec(t *testing.T) {
 			},
 			pCont: float64(125),
 			pDisc: float64(150),
-		}, { // 3
+		},
+		{ // 3
 			args: []interface{}{
 				[]interface{}{
 					float64(100),
@@ -236,7 +257,8 @@ func TestPercentileExec(t *testing.T) {
 			},
 			pCont: float64(125),
 			pDisc: float64(150),
-		}, { // 4
+		},
+		{ // 4
 			args: []interface{}{
 				[]interface{}{
 					100, 150, 200,
@@ -245,13 +267,24 @@ func TestPercentileExec(t *testing.T) {
 			},
 			pCont: float64(125),
 			pDisc: float64(150),
-		}, { // 5
+		},
+		{ // 5
 			args: []interface{}{
 				[]interface{}{},
 				[]interface{}{},
 			},
 			pCont: nil,
 			pDisc: nil,
+		},
+		{ // 6
+			args: []interface{}{
+				[]interface{}{
+					100, 150, nil, 200,
+				},
+				[]interface{}{0.5, 0.5, 0.5},
+			},
+			pCont: float64(125),
+			pDisc: float64(150),
 		},
 	}
 	for i, tt := range tests {
@@ -273,7 +306,7 @@ func TestConcatExec(t *testing.T) {
 	}
 	contextLogger := conf.Log.WithField("rule", "testExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 2)
 	tests := []struct {
 		name   string
@@ -333,7 +366,7 @@ func TestConcatExec(t *testing.T) {
 func TestAggFuncNil(t *testing.T) {
 	contextLogger := conf.Log.WithField("rule", "testExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 2)
 	oldBuiltins := builtins
 	defer func() {
@@ -429,7 +462,7 @@ func TestLastValue(t *testing.T) {
 	}
 	contextLogger := conf.Log.WithField("rule", "testExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 2)
 	tests := []struct {
 		args   []interface{}
@@ -478,7 +511,7 @@ func TestLastValue(t *testing.T) {
 					true,
 				},
 			},
-			result: int(1),
+			result: 1,
 		},
 		{
 			args: []interface{}{
@@ -580,6 +613,13 @@ func TestLastValue(t *testing.T) {
 			args: []interface{}{
 				[]interface{}{},
 				[]interface{}{true},
+			},
+			result: nil,
+		},
+		{
+			args: []interface{}{
+				[]interface{}{},
+				true,
 			},
 			result: nil,
 		},

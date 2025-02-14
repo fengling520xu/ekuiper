@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import (
 	"encoding/gob"
 	"fmt"
 
-	kvEncoding "github.com/lf-edge/ekuiper/internal/pkg/store/encoding"
+	kvEncoding "github.com/lf-edge/ekuiper/v2/internal/pkg/store/encoding"
 )
 
 type ts struct {
@@ -30,6 +30,9 @@ type ts struct {
 }
 
 func createSqlTs(database Database, table string) (*ts, error) {
+	if !isValidTableName(table) {
+		return nil, fmt.Errorf("invalid table name: %s", table)
+	}
 	store := &ts{
 		database: database,
 		table:    table,
@@ -37,7 +40,11 @@ func createSqlTs(database Database, table string) (*ts, error) {
 	}
 	err := store.database.Apply(func(db *sql.DB) error {
 		query := fmt.Sprintf("CREATE TABLE IF NOT EXISTS '%s'('key' INTEGER PRIMARY KEY, 'val' BLOB);", table)
-		_, err := db.Exec(query)
+		stmt, err := db.Prepare(query)
+		if err != nil {
+			return err
+		}
+		_, err = stmt.Exec(query)
 		return err
 	})
 	if err != nil {
@@ -77,8 +84,12 @@ func (t *ts) Set(key int64, value interface{}) (bool, error) {
 func (t ts) Get(key int64, value interface{}) (bool, error) {
 	result := false
 	err := t.database.Apply(func(db *sql.DB) error {
-		query := fmt.Sprintf("SELECT val FROM %s WHERE key=%d;", t.table, key)
-		row := db.QueryRow(query)
+		query := fmt.Sprintf("SELECT val FROM %s WHERE key=?;", t.table)
+		stmt, err := db.Prepare(query)
+		if err != nil {
+			return err
+		}
+		row := stmt.QueryRow(key)
 		var tmp []byte
 		switch err := row.Scan(&tmp); err {
 		case sql.ErrNoRows:
@@ -111,16 +122,24 @@ func (t ts) Last(value interface{}) (int64, error) {
 
 func (t ts) Delete(key int64) error {
 	return t.database.Apply(func(db *sql.DB) error {
-		query := fmt.Sprintf("DELETE FROM %s WHERE key=%d;", t.table, key)
-		_, err := db.Exec(query)
+		query := fmt.Sprintf("DELETE FROM %s WHERE key=?;", t.table)
+		stmt, err := db.Prepare(query)
+		if err != nil {
+			return err
+		}
+		_, err = stmt.Exec(key)
 		return err
 	})
 }
 
 func (t ts) DeleteBefore(key int64) error {
 	return t.database.Apply(func(db *sql.DB) error {
-		query := fmt.Sprintf("DELETE FROM %s WHERE key<%d;", t.table, key)
-		_, err := db.Exec(query)
+		query := fmt.Sprintf("DELETE FROM %s WHERE key<?;", t.table)
+		stmt, err := db.Prepare(query)
+		if err != nil {
+			return err
+		}
+		_, err = stmt.Exec(key)
 		return err
 	})
 }
@@ -141,9 +160,12 @@ func getLast(d Database, table string) int64 {
 	var last int64 = 0
 	_ = d.Apply(func(db *sql.DB) error {
 		query := fmt.Sprintf("SELECT key FROM %s Order by key DESC Limit 1;", table)
-		row := db.QueryRow(query)
-		err := row.Scan(&last)
-		return err
+		stmt, err := db.Prepare(query)
+		if err != nil {
+			return err
+		}
+		row := stmt.QueryRow(query)
+		return row.Scan(&last)
 	})
 	return last
 }

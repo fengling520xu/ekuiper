@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,53 +16,74 @@ package node
 
 import (
 	"fmt"
+	"strings"
+	"sync"
 
-	"github.com/lf-edge/ekuiper/internal/binder/io"
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/topo/checkpoint"
-	"github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/internal/topo/node/metric"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/lf-edge/ekuiper/v2/internal/binder/io"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/util"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/checkpoint"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/node/metric"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/node/tracenode"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/errorx"
+	"github.com/lf-edge/ekuiper/v2/pkg/infra"
 )
 
-type OperatorNode interface {
-	api.Operator
-	Broadcast(data interface{}) error
-	GetStreamContext() api.StreamContext
-	GetInputCount() int
-	AddInputCount()
-	SetQos(api.Qos)
-	SetBarrierHandler(checkpoint.BarrierHandler)
-	RemoveMetrics(name string)
-}
-
-type DataSourceNode interface {
-	api.Emitter
-	Open(ctx api.StreamContext, errCh chan<- error)
-	GetName() string
-	GetMetrics() [][]interface{}
-	RemoveMetrics(ruleId string)
-	Broadcast(val interface{}) error
-	GetStreamContext() api.StreamContext
-	SetQos(api.Qos)
-}
-
 type defaultNode struct {
-	name         string
-	outputs      map[string]chan<- interface{}
-	concurrency  int
-	sendError    bool
-	statManagers []metric.StatManager
-	ctx          api.StreamContext
-	qos          api.Qos
+	name        string
+	concurrency int
+	sendError   bool
+	statManager metric.StatManager
+	ctx         api.StreamContext
+	ctrlCh      chan<- error
+	qos         def.Qos
+	outputMu    sync.RWMutex
+	outputs     map[string]chan any
+	opsWg       *sync.WaitGroup
+	// tracing state
+	span                     trace.Span
+	spanCtx                  api.StreamContext
+	disableBufferFullDiscard bool
 }
 
-func (o *defaultNode) AddOutput(output chan<- interface{}, name string) error {
-	if _, ok := o.outputs[name]; !ok {
-		o.outputs[name] = output
-	} else {
-		return fmt.Errorf("fail to add output %s, node %s already has an output of the same name", name, o.name)
+func newDefaultNode(name string, options *def.RuleOption) *defaultNode {
+	c := options.Concurrency
+	if c < 1 {
+		c = 1
+	}
+	return &defaultNode{
+		name:                     name,
+		outputs:                  make(map[string]chan any),
+		concurrency:              c,
+		sendError:                options.SendError,
+		disableBufferFullDiscard: options.DisableBufferFullDiscard,
+	}
+}
+
+func (o *defaultNode) AddOutput(output chan any, name string) error {
+	o.outputMu.Lock()
+	defer o.outputMu.Unlock()
+	o.outputs[name] = output
+	return nil
+}
+
+func (o *defaultNode) RemoveOutput(name string) error {
+	o.outputMu.Lock()
+	defer o.outputMu.Unlock()
+	namePre := name + "_"
+	for n := range o.outputs {
+		if strings.HasPrefix(n, namePre) {
+			delete(o.outputs, n)
+			if o.ctx != nil {
+				o.ctx.GetLogger().Infof("Remove output %s from %s", n, o.name)
+			}
+		}
 	}
 	return nil
 }
@@ -71,64 +92,88 @@ func (o *defaultNode) GetName() string {
 	return o.name
 }
 
-// SetConcurrency sets the concurrency level for the operation
-func (o *defaultNode) SetConcurrency(concurr int) {
-	o.concurrency = concurr
-	if o.concurrency < 1 {
-		o.concurrency = 1
-	}
-}
-
-func (o *defaultNode) SetQos(qos api.Qos) {
+func (o *defaultNode) SetQos(qos def.Qos) {
 	o.qos = qos
 }
 
-func (o *defaultNode) GetMetrics() (result [][]interface{}) {
-	for _, stats := range o.statManagers {
-		result = append(result, stats.GetMetrics())
+func (o *defaultNode) GetMetrics() []any {
+	if o.statManager != nil {
+		return o.statManager.GetMetrics()
 	}
-	return result
+	return nil
 }
 
 func (o *defaultNode) RemoveMetrics(ruleId string) {
-	for _, stats := range o.statManagers {
-		stats.Clean(ruleId)
+	if o.statManager != nil {
+		o.statManager.Clean(ruleId)
 	}
 }
 
-func (o *defaultNode) Broadcast(val interface{}) error {
+func (o *defaultNode) Broadcast(val any) {
+	o.BroadcastCustomized(val, o.doBroadcast)
+}
+
+func (o *defaultNode) BroadcastCustomized(val any, broadcastFunc func(val any)) {
 	if _, ok := val.(error); ok && !o.sendError {
-		return nil
+		return
 	}
-	if o.qos >= api.AtLeastOnce {
+	if o.qos >= def.AtLeastOnce {
 		boe := &checkpoint.BufferOrEvent{
 			Data:    val,
 			Channel: o.name,
 		}
-		o.doBroadcast(boe)
-		return nil
+		broadcastFunc(boe)
+		return
 	}
-	o.doBroadcast(val)
-	return nil
+	broadcastFunc(val)
+	return
 }
 
-func (o *defaultNode) doBroadcast(val interface{}) {
+func (o *defaultNode) doBroadcast(val any) {
+	o.outputMu.RLock()
+	defer o.outputMu.RUnlock()
+	first := true
 	for name, out := range o.outputs {
-		select {
-		case out <- val:
-			// do nothing
-		case <-o.ctx.Done():
-			// rule stop so stop waiting
-		default:
-			o.statManagers[0].IncTotalExceptions(fmt.Sprintf("buffer full, drop message from to %s", name))
-			o.ctx.GetLogger().Debugf("drop message from %s to %s", o.name, name)
+		// Only copy when there are many outputs to save one copy time
+		if !first {
+			switch vt := val.(type) {
+			case xsql.Collection:
+				val = vt.Clone()
+			case xsql.Row:
+				val = vt.Clone()
+			}
 		}
-		switch vt := val.(type) {
-		case xsql.Collection:
-			val = vt.Clone()
-			break
-		case xsql.TupleRow:
-			val = vt.Clone()
+		first = false
+
+		// Fallback to set the context when sending out so that all children have the same parent ctx
+		// If has set ctx in the node impl, do not override it
+		if vt, ok := val.(xsql.HasTracerCtx); ok && vt.GetTracerCtx() == nil {
+			vt.SetTracerCtx(o.spanCtx)
+		}
+		// wait buffer consume if buffer full
+		if o.disableBufferFullDiscard {
+			select {
+			case out <- val:
+				continue
+			case <-o.ctx.Done():
+				return
+			}
+		}
+		// Try to send the latest one. If full, read the oldest one and retry
+	forlabel:
+		for {
+			select {
+			case out <- val:
+				break forlabel
+			case <-o.ctx.Done():
+				return
+			default:
+				// read the oldest to drop.
+				oldest := <-out
+				// record the error and stop propagating to avoid infinite loop
+				// TODO get a unique id for the message
+				o.onErrorOpt(o.ctx, fmt.Errorf("buffer full, drop message %v from %s to %s", oldest, o.name, name), false)
+			}
 		}
 	}
 }
@@ -139,12 +184,19 @@ func (o *defaultNode) GetStreamContext() api.StreamContext {
 
 type defaultSinkNode struct {
 	*defaultNode
-	input          chan interface{}
+	input          chan any
 	barrierHandler checkpoint.BarrierHandler
 	inputCount     int
 }
 
-func (o *defaultSinkNode) GetInput() (chan<- interface{}, string) {
+func newDefaultSinkNode(name string, options *def.RuleOption) *defaultSinkNode {
+	return &defaultSinkNode{
+		defaultNode: newDefaultNode(name, options),
+		input:       make(chan any, options.BufferLength),
+	}
+}
+
+func (o *defaultSinkNode) GetInput() (chan any, string) {
 	return o.input, o.name
 }
 
@@ -160,14 +212,38 @@ func (o *defaultSinkNode) SetBarrierHandler(bh checkpoint.BarrierHandler) {
 	o.barrierHandler = bh
 }
 
-// return the data and if processed
-func (o *defaultSinkNode) preprocess(data interface{}) (interface{}, bool) {
-	if o.qos >= api.AtLeastOnce {
-		logger := o.ctx.GetLogger()
-		logger.Debugf("%s preprocess receive data %+v", o.name, data)
-		b, ok := data.(*checkpoint.BufferOrEvent)
+func (o *defaultNode) prepareExec(ctx api.StreamContext, errCh chan<- error, opType string) {
+	ctx.GetLogger().Infof("%s started", o.name)
+	o.statManager = metric.NewStatManager(ctx, opType)
+	o.ctx = ctx
+	wg := ctx.Value(context.RuleWaitGroupKey)
+	if wg != nil {
+		o.opsWg = wg.(*sync.WaitGroup)
+	}
+	if o.opsWg != nil {
+		o.opsWg.Add(1)
+	}
+	o.ctrlCh = errCh
+}
+
+func (o *defaultNode) finishExec() {
+	o.Close()
+}
+
+func (o *defaultNode) Close() {
+	if o.opsWg != nil {
+		o.ctx.GetLogger().Infof("node %s is closing", o.name)
+		o.opsWg.Done()
+	} else {
+		o.ctx.GetLogger().Infof("node %s is missing close wg", o.name)
+	}
+}
+
+func (o *defaultSinkNode) preprocess(ctx api.StreamContext, item any) (any, bool) {
+	if o.qos >= def.AtLeastOnce {
+		b, ok := item.(*checkpoint.BufferOrEvent)
 		if ok {
-			logger.Debugf("data is BufferOrEvent, start barrier handler")
+			ctx.GetLogger().Debugf("data is BufferOrEvent, start barrier handler")
 			// if it is a barrier, return true and ignore the further processing
 			// if it is blocked(align handler), return true and then write back to the channel later
 			if o.barrierHandler.Process(b, o.ctx) {
@@ -177,61 +253,120 @@ func (o *defaultSinkNode) preprocess(data interface{}) (interface{}, bool) {
 			}
 		}
 	}
-	return data, false
+	return item, false
 }
 
-func SinkOpen(sinkType string, config map[string]interface{}) error {
-	sink, err := getSink(sinkType, config)
-	if err != nil {
-		return err
+func (o *defaultSinkNode) commonIngest(ctx api.StreamContext, item any) (any, bool) {
+	ctx.GetLogger().Debugf("op %s_%d receive %v", ctx.GetOpId(), ctx.GetInstanceId(), item)
+	item, processed := o.preprocess(ctx, item)
+	if processed {
+		return item, processed
 	}
-
-	contextLogger := conf.Log.WithField("rule", "TestSinkOpen"+"_"+sinkType)
-	ctx := context.WithValue(context.Background(), context.LoggerKey, contextLogger)
-
-	defer func() {
-		_ = sink.Close(ctx)
-	}()
-
-	return sink.Open(ctx)
+	switch d := item.(type) {
+	case error:
+		if o.sendError {
+			o.Broadcast(d)
+		}
+		return nil, true
+	case *xsql.WatermarkTuple, xsql.EOFTuple:
+		o.Broadcast(d)
+		return nil, true
+	}
+	ctx.GetLogger().Debugf("%s_%d receive data %v", ctx.GetOpId(), ctx.GetInstanceId(), item)
+	return item, false
 }
 
-func SourceOpen(sourceType string, config map[string]interface{}) error {
-	dataSource := "/$$TEST_CONNECTION$$"
-	if v, ok := config["DATASOURCE"]; ok {
-		dataSource = v.(string)
-	}
-	ns, err := io.Source(sourceType)
-	if err != nil {
-		return err
-	}
-	if ns == nil {
-		lns, err := io.LookupSource(sourceType)
-		if err != nil {
-			return err
-		}
-		if lns == nil {
-			// should not happen
-			return fmt.Errorf("source %s not found", sourceType)
-		}
-		err = lns.Configure(dataSource, config)
-		if err != nil {
-			return err
-		}
-
-		contextLogger := conf.Log.WithField("rule", "TestSourceOpen"+"_"+sourceType)
-		ctx := context.WithValue(context.Background(), context.LoggerKey, contextLogger)
-		_ = lns.Close(ctx)
+func (o *defaultSinkNode) handleEof(ctx api.StreamContext, d xsql.EOFTuple) {
+	if len(o.outputs) > 0 {
+		o.Broadcast(d)
 	} else {
-		err = ns.Configure(dataSource, config)
-		if err != nil {
-			return err
-		}
-
-		contextLogger := conf.Log.WithField("rule", "TestSourceOpen"+"_"+sourceType)
-		ctx := context.WithValue(context.Background(), context.LoggerKey, contextLogger)
-		_ = ns.Close(ctx)
+		infra.DrainError(ctx, errorx.NewEOF(), o.ctrlCh)
 	}
+}
 
-	return nil
+// onProcessStart do the common works(metric, trace) when receiving a message from upstream
+func (o *defaultNode) onProcessStart(ctx api.StreamContext, val any) {
+	o.statManager.IncTotalRecordsIn()
+	o.statManager.ProcessTimeStart()
+	// Source just pass nil val so that no trace. The trace will start after extracting trace id
+	if val != nil {
+		traced, spanCtx, span := tracenode.TraceInput(ctx, val, o.name)
+		if traced {
+			tracenode.RecordRowOrCollection(val, span)
+			o.span = span
+			o.spanCtx = spanCtx
+		}
+	}
+}
+
+// onProcessEnd do the common works(metric, trace) after processing a message from upstream
+func (o *defaultNode) onProcessEnd(ctx api.StreamContext) {
+	o.statManager.ProcessTimeEnd()
+	o.statManager.IncTotalMessagesProcessed(1)
+	if o.span != nil {
+		o.span.End()
+		o.span = nil
+	}
+}
+
+// onSend do the common works(metric, trace) after sending a message to downstream
+func (o *defaultNode) onSend(ctx api.StreamContext, val any) {
+	o.statManager.IncTotalRecordsOut()
+}
+
+// onError do the common works(metric, trace) after throwing an error
+func (o *defaultNode) onError(ctx api.StreamContext, err error) {
+	o.onErrorOpt(ctx, err, true)
+}
+
+// onError do the common works(metric, trace) after throwing an error
+func (o *defaultNode) onErrorOpt(ctx api.StreamContext, err error, sendOut bool) {
+	ctx.GetLogger().Errorf("Operation %s error: %s", ctx.GetOpId(), err)
+	if sendOut && o.sendError {
+		o.Broadcast(err)
+	}
+	o.statManager.IncTotalExceptions(err.Error())
+	if o.span != nil {
+		o.span.RecordError(err)
+		o.span.SetStatus(codes.Error, err.Error())
+	}
+}
+
+func SourcePing(sourceType string, config map[string]any) error {
+	source, err := io.Source(sourceType)
+	if err != nil {
+		return err
+	}
+	if _, ok := config["datasource"]; !ok {
+		config["datasource"] = "/$$TEST_CONNECTION$$"
+	}
+	if pingAble, ok := source.(util.PingableConn); ok {
+		return pingAble.Ping(context.Background(), config)
+	}
+	return fmt.Errorf("source %v doesn't support ping connection", sourceType)
+}
+
+func SinkPing(sinkType string, config map[string]any) error {
+	sink, err := io.Sink(sinkType)
+	if err != nil {
+		return err
+	}
+	if pingAble, ok := sink.(util.PingableConn); ok {
+		return pingAble.Ping(context.Background(), config)
+	}
+	return fmt.Errorf("sink %v doesn't support ping connection", sinkType)
+}
+
+func LookupPing(lookupType string, config map[string]any) error {
+	lookup, err := io.LookupSource(lookupType)
+	if err != nil {
+		return err
+	}
+	if _, ok := config["datasource"]; !ok {
+		config["datasource"] = "/$$TEST_CONNECTION$$"
+	}
+	if pingAble, ok := lookup.(util.PingableConn); ok {
+		return pingAble.Ping(context.Background(), config)
+	}
+	return fmt.Errorf("lookup source %v doesn't support ping connection", lookupType)
 }

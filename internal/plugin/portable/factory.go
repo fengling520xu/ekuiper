@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,10 +17,11 @@ package portable
 import (
 	"sync"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/plugin"
-	"github.com/lf-edge/ekuiper/internal/plugin/portable/runtime"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin/portable/runtime"
 )
 
 func (m *Manager) Source(name string) (api.Source, error) {
@@ -42,7 +43,7 @@ func (m *Manager) SourcePluginInfo(name string) (plugin.EXTENSION_TYPE, string, 
 	}
 }
 
-func (m *Manager) LookupSource(_ string) (api.LookupSource, error) {
+func (m *Manager) LookupSource(_ string) (api.Source, error) {
 	// TODO add support
 	return nil, nil
 }

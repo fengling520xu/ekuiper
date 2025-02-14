@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -344,6 +346,10 @@ func TestToFloatResult(t *testing.T) {
 		{
 			true,
 			1,
+		},
+		{
+			nil,
+			0,
 		},
 	}
 	for _, tt := range tests {
@@ -883,8 +889,8 @@ func TestToByteA(t *testing.T) {
 		err    string
 	}{
 		{
-			input: "foo",
-			err:   "illegal string foo, must be base64 encoded string",
+			input:  "foo",
+			output: []byte("foo"),
 		}, {
 			input:  []byte("foo"),
 			output: []byte("foo"),
@@ -911,4 +917,87 @@ func TestToByteA(t *testing.T) {
 			}
 		}
 	}
+}
+
+type mockconf struct {
+	Interval  time.Duration
+	Interval2 DurationConf
+}
+
+func TestMapToStructDuration(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  map[string]any
+		output mockconf
+		err    string
+	}{
+		{
+			name: "duration string",
+			input: map[string]any{
+				"interval":  "5s",
+				"interval2": "5s",
+			},
+			output: mockconf{
+				Interval:  5 * time.Second,
+				Interval2: DurationConf(5 * time.Second),
+			},
+		},
+		{
+			name: "duration int for millisecond",
+			input: map[string]any{
+				"interval": 1000,
+			},
+			output: mockconf{
+				Interval: time.Second,
+			},
+		},
+		{
+			name: "duration float for millisecond",
+			input: map[string]any{
+				"interval": 1000.0,
+			},
+			output: mockconf{
+				Interval: time.Second,
+			},
+		},
+		{
+			name: "invalid duration string",
+			input: map[string]any{
+				"interval": "400",
+			},
+			err: "1 error(s) decoding:\n\n* error decoding 'Interval': time: missing unit in duration \"400\"",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := mockconf{}
+			err := MapToStruct(tt.input, &r)
+			if tt.err != "" {
+				assert.Error(t, err)
+				assert.EqualError(t, err, tt.err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.output, r)
+			}
+		})
+	}
+}
+
+func BenchmarkToString(b *testing.B) {
+	f := 3.14
+	b.Run("all", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = ToStringAlways(f)
+		}
+	})
+	b.Run("cast", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_, _ = ToString(f, CONVERT_ALL)
+		}
+	})
+	b.Run("cast", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = strconv.FormatFloat(f, 'f', -1, 64)
+		}
+	})
 }

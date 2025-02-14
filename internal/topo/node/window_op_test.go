@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,8 +20,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/stretchr/testify/require"
+
+	"github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
 )
 
 var fivet = []*xsql.Tuple{
@@ -152,7 +155,7 @@ func TestCountWindow(t *testing.T) {
 			expWinCount: 1,
 			winTupleSets: []xsql.WindowTuples{
 				{
-					Content: []xsql.TupleRow{
+					Content: []xsql.Row{
 						&xsql.Tuple{
 							Message: map[string]interface{}{
 								"f1": "v1",
@@ -213,7 +216,7 @@ func TestCountWindow(t *testing.T) {
 			expWinCount: 1,
 			winTupleSets: []xsql.WindowTuples{
 				{
-					Content: []xsql.TupleRow{
+					Content: []xsql.Row{
 						&xsql.Tuple{
 							Message: map[string]interface{}{
 								"f3": "v3",
@@ -254,7 +257,7 @@ func TestCountWindow(t *testing.T) {
 			expWinCount: 1,
 			winTupleSets: []xsql.WindowTuples{
 				{
-					Content: []xsql.TupleRow{
+					Content: []xsql.Row{
 						&xsql.Tuple{
 							Message: map[string]interface{}{
 								"f4": "v4",
@@ -338,4 +341,40 @@ func TestCountWindow(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestGCInputsForConditionNotMatch(t *testing.T) {
+	o := &WindowOperator{
+		defaultSinkNode: &defaultSinkNode{
+			defaultNode: &defaultNode{
+				name: "1",
+			},
+		},
+		window: &WindowConfig{
+			Length: time.Second,
+			Type:   ast.SLIDING_WINDOW,
+		},
+		isOverlapWindow: true,
+	}
+	tuples := []*xsql.Tuple{
+		{
+			Timestamp: time.UnixMilli(3000),
+		},
+		{
+			Timestamp: time.UnixMilli(4000),
+		},
+		{
+			Timestamp: time.UnixMilli(5000),
+		},
+	}
+	o.triggerTime = time.UnixMilli(1)
+	inputs := o.gcInputs(tuples, time.UnixMilli(4500), context.Background())
+	require.Equal(t, []*xsql.Tuple{
+		{
+			Timestamp: time.UnixMilli(4000),
+		},
+		{
+			Timestamp: time.UnixMilli(5000),
+		},
+	}, inputs)
 }

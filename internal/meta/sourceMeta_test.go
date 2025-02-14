@@ -1,4 +1,4 @@
-// Copyright 2021-2022 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,9 +17,14 @@ package meta
 import (
 	"fmt"
 	"path"
+	"sort"
 	"testing"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/pkg/errorx"
 )
 
 func TestGetMqttSourceMeta(t *testing.T) {
@@ -65,6 +70,8 @@ func TestGetSqlSourceMeta(t *testing.T) {
 		t.Error(err)
 	}
 
+	assert.Equal(t, "internal", showMeta.Type)
+
 	fields := showMeta.ConfKeys["default"]
 
 	for _, value := range fields {
@@ -99,4 +106,49 @@ func TestGetSqlSinkMeta(t *testing.T) {
 			t.Errorf("value %v type field shoud not be empty", value)
 		}
 	}
+}
+
+func TestSourceMeta(t *testing.T) {
+	_, err := GetSourceMeta("123", "123")
+	require.Error(t, err)
+	ewc, ok := err.(errorx.ErrorWithCode)
+	require.True(t, ok)
+	require.Equal(t, errorx.ConfKeyError, ewc.Code())
+}
+
+func TestGetSource(t *testing.T) {
+	commonAbout := &about{Installed: true}
+	gSourcemetadata = map[string]*uiSource{
+		"mqtt.json": {
+			About: commonAbout,
+		},
+		"random.json": {
+			About: commonAbout,
+		},
+		"pyjson.json": {
+			About: commonAbout,
+		},
+	}
+	expected := []*pluginfo{
+		{
+			Name:  "mqtt",
+			About: commonAbout,
+			Type:  "internal",
+		},
+		{
+			Name:  "pyjson",
+			About: commonAbout,
+			Type:  "none",
+		},
+		{
+			Name:  "random",
+			About: commonAbout,
+			Type:  "none",
+		},
+	}
+	sources := GetSourcesPlugins("stream")
+	sort.SliceStable(sources, func(i, j int) bool {
+		return sources[i].Name < sources[j].Name
+	})
+	require.Equal(t, expected, sources)
 }

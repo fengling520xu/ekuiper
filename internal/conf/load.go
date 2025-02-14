@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -38,9 +38,20 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mitchellh/mapstructure"
 	"gopkg.in/yaml.v3"
+
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
+
+var LoadConfigCache map[string]map[string]interface{}
+
+func init() {
+	LoadConfigCache = make(map[string]map[string]interface{})
+}
+
+func clearLoadConfigCache() {
+	LoadConfigCache = make(map[string]map[string]interface{})
+}
 
 const Separator = "__"
 
@@ -58,6 +69,9 @@ func LoadConfigByName(name string, c interface{}) error {
 }
 
 func LoadConfigFromPath(p string, c interface{}) error {
+	if cache, ok := LoadConfigCache[p]; ok {
+		return cast.MapToStruct(cache, c)
+	}
 	prefix := getPrefix(p)
 	b, err := os.ReadFile(p)
 	if err != nil {
@@ -70,7 +84,7 @@ func LoadConfigFromPath(p string, c interface{}) error {
 	}
 	// Make all keys to lowercase to match environment variables then revert it back by checking json defs
 	configs := normalize(configMap)
-	err = process(configs, os.Environ(), prefix)
+	err = process(configs, GetEnv(), prefix)
 	if err != nil {
 		return err
 	}
@@ -83,7 +97,8 @@ func LoadConfigFromPath(p string, c interface{}) error {
 		}
 		applyKeys(configs, names)
 	}
-	return mapstructure.Decode(configs, c)
+	LoadConfigCache[p] = configs
+	return cast.MapToStruct(configs, c)
 }
 
 func CorrectsConfigKeysByJson(configs map[string]interface{}, jsonFilePath string) error {
@@ -111,20 +126,16 @@ func getPrefix(p string) string {
 	return strings.ToUpper(strings.TrimSuffix(file, filepath.Ext(file)))
 }
 
-func process(configMap map[string]interface{}, variables []string, prefix string) error {
-	for _, e := range variables {
-		if !strings.HasPrefix(e, prefix) {
+func process(configMap map[string]interface{}, env map[string]string, prefix string) error {
+	for key, value := range env {
+		if !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		pair := strings.SplitN(e, "=", 2)
-		if len(pair) != 2 {
-			return fmt.Errorf("wrong format of variable")
-		}
-		keys := nameToKeys(trimPrefix(pair[0], prefix))
-		handle(configMap, keys, pair[1])
+		keys := nameToKeys(trimPrefix(key, prefix))
+		handle(configMap, keys, value)
 		printableK := strings.Join(keys, ".")
-		printableV := pair[1]
-		if strings.Contains(strings.ToLower(printableK), "password") {
+		printableV := value
+		if strings.Contains(strings.ToLower(printableK), "password") || strings.Contains(strings.ToLower(printableK), "kuiper_props") {
 			printableV = "*"
 		}
 		Log.Infof("Set config '%s.%s' to '%s' by environment variable", strings.ToLower(prefix), printableK, printableV)

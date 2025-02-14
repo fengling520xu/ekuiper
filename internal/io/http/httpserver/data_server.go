@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,131 +15,141 @@
 package httpserver
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
+	"github.com/gorilla/websocket"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/io/memory/pubsub"
-	kctx "github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/internal/topo/state"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/io/memory/pubsub"
+	topoContext "github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
-// manage the global http data server
-
-var (
-	refCount int32
-	server   *http.Server
-	router   *mux.Router
-	done     chan struct{}
-	sctx     api.StreamContext
-	lock     sync.RWMutex
-)
-
-const TopicPrefix = "$$httppush/"
-
-func init() {
-	contextLogger := conf.Log.WithField("httppush_connection", 0)
-	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	ruleId := "$$httppush_connection"
-	opId := "$$httppush_connection"
-	store, err := state.CreateStore(ruleId, 0)
-	if err != nil {
-		ctx.GetLogger().Errorf("neuron connection create store error %v", err)
-		panic(err)
-	}
-	sctx = ctx.WithMeta(ruleId, opId, store)
+type GlobalServerManager struct {
+	sync.RWMutex
+	instanceID        int
+	endpoint          map[string]string
+	server            *http.Server
+	router            *mux.Router
+	routes            map[string]http.HandlerFunc
+	upgrader          websocket.Upgrader
+	websocketEndpoint map[string]*websocketEndpointContext
 }
 
-func registerInit() error {
-	lock.Lock()
-	defer lock.Unlock()
-	if server == nil {
-		var err error
-		server, router, err = createDataServer()
-		if err != nil {
-			return err
-		}
-	}
-	refCount++
-	return nil
-}
+var manager *GlobalServerManager
 
-func RegisterEndpoint(endpoint string, method string, _ string) (string, chan struct{}, error) {
-	err := registerInit()
-	if err != nil {
-		return "", nil, err
-	}
-	topic := TopicPrefix + endpoint
-	pubsub.CreatePub(topic)
-	router.HandleFunc(endpoint, func(w http.ResponseWriter, r *http.Request) {
-		sctx.GetLogger().Debugf("receive http request: %s", r.URL.String())
-		defer r.Body.Close()
-		m := make(map[string]interface{})
-		err := json.NewDecoder(r.Body).Decode(&m)
-		if err != nil {
-			handleError(w, err, "Fail to decode data")
-			pubsub.ProduceError(sctx, topic, fmt.Errorf("fail to decode data %s: %v", r.Body, err))
-			return
-		}
-		sctx.GetLogger().Debugf("httppush received message %s", m)
-		pubsub.Produce(sctx, topic, m)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	}).Methods(method)
-	return topic, done, nil
-}
-
-func UnregisterEndpoint(endpoint string) {
-	lock.Lock()
-	defer lock.Unlock()
-	pubsub.RemovePub(TopicPrefix + endpoint)
-	refCount--
-	// TODO async close server
-	if refCount == 0 {
-		sctx.GetLogger().Infof("shutting down http data server...")
-		if err := server.Shutdown(sctx); err != nil {
-			sctx.GetLogger().Errorf("shutdown: %s", err)
-		}
-		sctx.GetLogger().Infof("http data server exiting")
-		server = nil
-		router = nil
-	}
-}
-
-// createDataServer creates a new http data server. Must run inside lock
-func createDataServer() (*http.Server, *mux.Router, error) {
+func InitGlobalServerManager(ip string, port int, tlsConf *conf.TlsConf) {
 	r := mux.NewRouter()
 	s := &http.Server{
-		Addr: cast.JoinHostPortInt(conf.Config.Source.HttpServerIp, conf.Config.Source.HttpServerPort),
+		Addr: cast.JoinHostPortInt(ip, port),
 		// Good practice to set timeouts to avoid Slowloris attacks.
 		WriteTimeout: time.Second * 60 * 5,
 		ReadTimeout:  time.Second * 60 * 5,
 		IdleTimeout:  time.Second * 60,
 		Handler:      handlers.CORS(handlers.AllowedHeaders([]string{"Accept", "Accept-Language", "Content-Type", "Content-Language", "Origin", "Authorization"}), handlers.AllowedMethods([]string{"POST", "GET", "PUT", "DELETE", "HEAD"}))(r),
 	}
-	done = make(chan struct{})
-	go func(done chan struct{}) {
-		var err error
-		if conf.Config.Source.HttpServerTls == nil {
-			err = s.ListenAndServe()
+	upgrader := websocket.Upgrader{
+		ReadBufferSize:  256,
+		WriteBufferSize: 256,
+		WriteBufferPool: &sync.Pool{},
+		// always allowed any origin
+		CheckOrigin: func(r *http.Request) bool {
+			return true
+		},
+	}
+	manager = &GlobalServerManager{
+		websocketEndpoint: map[string]*websocketEndpointContext{},
+		endpoint:          map[string]string{},
+		server:            s,
+		router:            r,
+		routes:            map[string]http.HandlerFunc{},
+		upgrader:          upgrader,
+	}
+	go func(m *GlobalServerManager) {
+		if tlsConf == nil {
+			s.ListenAndServe()
 		} else {
-			err = s.ListenAndServeTLS(conf.Config.Source.HttpServerTls.Certfile, conf.Config.Source.HttpServerTls.Keyfile)
+			s.ListenAndServeTLS(conf.Config.Source.HttpServerTls.Certfile, conf.Config.Source.HttpServerTls.Keyfile)
 		}
+	}(manager)
+	time.Sleep(500 * time.Millisecond)
+}
+
+func ShutDown() {
+	manager.Shutdown()
+	manager = nil
+}
+
+func RegisterEndpoint(endpoint string, method string) (string, error) {
+	return manager.RegisterEndpoint(endpoint, method)
+}
+
+func UnregisterEndpoint(endpoint, method string) {
+	manager.UnregisterEndpoint(endpoint, method)
+}
+
+const (
+	TopicPrefix = "$$httppush/"
+)
+
+func (m *GlobalServerManager) RegisterEndpoint(endpoint string, method string) (string, error) {
+	var topic string
+	var ok bool
+	key := buildKey(endpoint, method)
+	m.Lock()
+	defer m.Unlock()
+	topic, ok = m.endpoint[key]
+	if ok {
+		return topic, nil
+	} else {
+		topic = TopicPrefix + key
+		m.endpoint[key] = topic
+	}
+	pubsub.CreatePub(topic)
+	m.routes[endpoint] = func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		data, err := io.ReadAll(r.Body)
 		if err != nil {
-			sctx.GetLogger().Errorf("http data server error: %v", err)
-			close(done)
+			handleError(w, err, "Fail to decode data")
+			return
 		}
-	}(done)
-	sctx.GetLogger().Infof("Serving http data server on port http://%s", cast.JoinHostPortInt(conf.Config.Source.HttpServerIp, conf.Config.Source.HttpServerPort))
-	return s, r, nil
+		pubsub.ProduceAny(topoContext.Background(), topic, data)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}
+	m.router.HandleFunc(endpoint, func(w http.ResponseWriter, r *http.Request) {
+		if h, ok := m.routes[endpoint]; ok {
+			h(w, r)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}).Methods(method)
+	return topic, nil
+}
+
+func (m *GlobalServerManager) UnregisterEndpoint(endpoint, method string) {
+	var ok bool
+	key := buildKey(endpoint, method)
+	m.Lock()
+	defer m.Unlock()
+	_, ok = m.endpoint[key]
+	if !ok {
+		return
+	}
+	delete(m.endpoint, key)
+	delete(m.routes, endpoint)
+	pubsub.RemovePub(TopicPrefix + key)
+}
+
+func (m *GlobalServerManager) Shutdown() {
+	m.server.Shutdown(context.Background())
 }
 
 func handleError(w http.ResponseWriter, err error, prefix string) {
@@ -149,4 +159,8 @@ func handleError(w http.ResponseWriter, err error, prefix string) {
 	}
 	message += err.Error()
 	http.Error(w, message, http.StatusBadRequest)
+}
+
+func buildKey(ep, method string) string {
+	return fmt.Sprintf("%s$$%s", ep, method)
 }

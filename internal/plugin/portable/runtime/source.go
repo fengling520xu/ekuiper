@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,11 +19,10 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/lf-edge/ekuiper/contract/v2/api"
 	"go.nanomsg.org/mangos/v3"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/infra"
+	"github.com/lf-edge/ekuiper/v2/pkg/timex"
 )
 
 // Error handling: wrap all error in a function to handle
@@ -32,33 +31,35 @@ type PortableSource struct {
 	symbolName string
 	reg        *PluginMeta
 	clean      func() error
+	dataCh     DataInChannel
 
 	topic string
-	props map[string]interface{}
+	props map[string]any
 }
 
-func NewPortableSource(symbolName string, reg *PluginMeta) *PortableSource {
-	return &PortableSource{
-		symbolName: symbolName,
-		reg:        reg,
-	}
+type messageWrapper struct {
+	Message map[string]any `json:"message"`
+	Meta    map[string]any `json:"meta"`
 }
 
-func (ps *PortableSource) Open(ctx api.StreamContext, consumer chan<- api.SourceTuple, errCh chan<- error) {
+func (ps *PortableSource) Provision(ctx api.StreamContext, configs map[string]any) error {
+	ps.props = configs
+	return nil
+}
+
+func (ps *PortableSource) Connect(ctx api.StreamContext, _ api.StatusChangeHandler) error {
 	ctx.GetLogger().Infof("Start running portable source %s with datasource %s and conf %+v", ps.symbolName, ps.topic, ps.props)
 	pm := GetPluginInsManager()
-	ins, err := pm.getOrStartProcess(ps.reg, PortbleConf)
+	ins, err := pm.GetOrStartProcess(ps.reg, PortbleConf)
 	if err != nil {
-		infra.DrainError(ctx, err, errCh)
-		return
+		return err
 	}
 	ctx.GetLogger().Infof("Plugin started successfully")
 
 	// wait for plugin data
 	dataCh, err := CreateSourceChannel(ctx)
 	if err != nil {
-		infra.DrainError(ctx, err, errCh)
-		return
+		return err
 	}
 
 	// Control: send message to plugin to ask starting symbol
@@ -76,10 +77,10 @@ func (ps *PortableSource) Open(ctx api.StreamContext, consumer chan<- api.Source
 	err = ins.StartSymbol(ctx, c)
 	if err != nil {
 		ctx.GetLogger().Error(err)
-		infra.DrainError(ctx, err, errCh)
 		_ = dataCh.Close()
-		return
+		return err
 	}
+	ps.dataCh = dataCh
 	ps.clean = func() error {
 		ctx.GetLogger().Info("clean up source")
 		err1 := dataCh.Close()
@@ -92,43 +93,51 @@ func (ps *PortableSource) Open(ctx api.StreamContext, consumer chan<- api.Source
 		}
 		return errors.Join(err1, err2)
 	}
+	return nil
+}
 
+func (ps *PortableSource) Subscribe(ctx api.StreamContext, ingest api.TupleIngest, ingestError api.ErrorIngest) error {
 	for {
 		var msg []byte
 		// make sure recv has timeout
-		msg, err = dataCh.Recv()
+		msg, err := ps.dataCh.Recv()
 		switch err {
 		case mangos.ErrClosed:
 			ctx.GetLogger().Info("stop source after close")
-			return
+			return nil
 		case mangos.ErrRecvTimeout:
 			ctx.GetLogger().Debug("source receive timeout, retry")
-			select {
-			case <-ctx.Done():
-				ctx.GetLogger().Info("stop source")
-				return
-			default:
-				continue
-			}
 		case nil:
 			// do nothing
 		default:
-			infra.DrainError(ctx, fmt.Errorf("cannot receive from mangos Socket: %s", err.Error()), errCh)
-			return
-		}
-		result := &api.DefaultSourceTuple{Time: conf.GetNow()}
-		e := json.Unmarshal(msg, result)
-		if e != nil {
-			ctx.GetLogger().Errorf("Invalid data format, cannot decode %s to json format with error %s", string(msg), e)
-			continue
+			ingestError(ctx, err)
+			return nil
 		}
 		select {
-		case consumer <- result:
-			ctx.GetLogger().Debugf("send data to source node")
 		case <-ctx.Done():
 			ctx.GetLogger().Info("stop source")
-			return
+			return nil
+		default:
+			if msg != nil {
+				rcvTime := timex.GetNow()
+				result := &messageWrapper{}
+				e := json.Unmarshal(msg, result)
+				if e != nil {
+					e = fmt.Errorf("Invalid data format, cannot decode %s to json format with error %s", string(msg), e)
+					ctx.GetLogger().Error(e)
+					ingestError(ctx, e)
+					continue
+				}
+				ingest(ctx, result.Message, result.Meta, rcvTime)
+			}
 		}
+	}
+}
+
+func NewPortableSource(symbolName string, reg *PluginMeta) *PortableSource {
+	return &PortableSource{
+		symbolName: symbolName,
+		reg:        reg,
 	}
 }
 
@@ -145,3 +154,5 @@ func (ps *PortableSource) Close(ctx api.StreamContext) error {
 	}
 	return nil
 }
+
+var _ api.TupleSource = &PortableSource{}

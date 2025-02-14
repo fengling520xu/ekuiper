@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,13 +15,14 @@
 package node
 
 import (
-	"fmt"
-	"sync"
+	"time"
 
-	"github.com/lf-edge/ekuiper/internal/topo/node/metric"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/infra"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+	"github.com/pingcap/failpoint"
+
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/infra"
 )
 
 // UnOperation interface represents unary operations (i.e. Map, Filter, etc)
@@ -40,22 +41,13 @@ func (f UnFunc) Apply(ctx api.StreamContext, data interface{}) interface{} {
 type UnaryOperator struct {
 	*defaultSinkNode
 	op        UnOperation
-	mutex     sync.RWMutex
 	cancelled bool
 }
 
 // New NewUnary creates *UnaryOperator value
-func New(name string, options *api.RuleOption) *UnaryOperator {
+func New(name string, options *def.RuleOption) *UnaryOperator {
 	return &UnaryOperator{
-		defaultSinkNode: &defaultSinkNode{
-			input: make(chan interface{}, options.BufferLength),
-			defaultNode: &defaultNode{
-				name:        name,
-				outputs:     make(map[string]chan<- interface{}),
-				concurrency: 1,
-				sendError:   options.SendError,
-			},
-		},
+		defaultSinkNode: newDefaultSinkNode(name, options),
 	}
 }
 
@@ -66,40 +58,32 @@ func (o *UnaryOperator) SetOperation(op UnOperation) {
 
 // Exec is the entry point for the executor
 func (o *UnaryOperator) Exec(ctx api.StreamContext, errCh chan<- error) {
-	o.ctx = ctx
-	log := ctx.GetLogger()
-	log.Debugf("Unary operator %s is started", o.name)
-
-	if len(o.outputs) <= 0 {
-		infra.DrainError(ctx, fmt.Errorf("no output channel found"), errCh)
-		return
-	}
-
+	o.prepareExec(ctx, errCh, "op")
 	// validate p
 	if o.concurrency < 1 {
 		o.concurrency = 1
 	}
-	// reset status
-	o.statManagers = nil
-
-	for i := 0; i < o.concurrency; i++ { // workers
-		instance := i
-		go func() {
-			err := infra.SafeRun(func() error {
-				o.doOp(ctx.WithInstance(instance), errCh)
-				return nil
+	go func() {
+		defer func() {
+			failpoint.Inject("mockTimeConsumingClose", func() {
+				time.Sleep(300 * time.Millisecond)
 			})
-			if err != nil {
-				infra.DrainError(ctx, err, errCh)
-			}
+			o.Close()
 		}()
-	}
+		err := infra.SafeRun(func() error {
+			o.doOp(ctx.WithInstance(0), errCh)
+			return nil
+		})
+		if err != nil {
+			infra.DrainError(ctx, err, errCh)
+		}
+	}()
 }
 
 func (o *UnaryOperator) doOp(ctx api.StreamContext, errCh chan<- error) {
 	logger := ctx.GetLogger()
 	if o.op == nil {
-		logger.Infoln("Unary operator missing operation")
+		logger.Info("Unary operator missing operation")
 		return
 	}
 	exeCtx, cancel := ctx.WithCancel()
@@ -109,66 +93,38 @@ func (o *UnaryOperator) doOp(ctx api.StreamContext, errCh chan<- error) {
 		cancel()
 	}()
 
-	stats, err := metric.NewStatManager(ctx, "op")
-	if err != nil {
-		infra.DrainError(ctx, err, errCh)
-		return
-	}
-	o.mutex.Lock()
-	o.statManagers = append(o.statManagers, stats)
-	o.mutex.Unlock()
 	fv, afv := xsql.NewFunctionValuersForOp(exeCtx)
 
 	for {
 		select {
 		// process incoming item
 		case item := <-o.input:
-			processed := false
-			if item, processed = o.preprocess(item); processed {
+			data, processed := o.commonIngest(ctx, item)
+			if processed {
 				break
 			}
-			switch d := item.(type) {
-			case error:
-				_ = o.Broadcast(d)
-				stats.IncTotalExceptions(d.Error())
-				continue
-			case *xsql.WatermarkTuple:
-				_ = o.Broadcast(d)
-				continue
-			}
-
-			stats.IncTotalRecordsIn()
-			stats.ProcessTimeStart()
-			result := o.op.Apply(exeCtx, item, fv, afv)
-
+			o.onProcessStart(ctx, data)
+			result := o.op.Apply(exeCtx, data, fv, afv)
 			switch val := result.(type) {
 			case nil:
-				continue
+				// ends, do nothing
 			case error:
-				logger.Errorf("Operation %s error: %s", ctx.GetOpId(), val)
-				_ = o.Broadcast(val)
-				stats.IncTotalExceptions(val.Error())
-				continue
-			case []xsql.TupleRow:
-				stats.ProcessTimeEnd()
+				o.onError(ctx, val)
+			case []xsql.Row:
 				for _, v := range val {
-					_ = o.Broadcast(v)
-					stats.IncTotalRecordsOut()
+					o.Broadcast(v)
+					o.onSend(ctx, v)
 				}
-				stats.SetBufferLength(int64(len(o.input)))
 			default:
-				stats.ProcessTimeEnd()
-				_ = o.Broadcast(val)
-				stats.IncTotalRecordsOut()
-				stats.SetBufferLength(int64(len(o.input)))
+				o.Broadcast(val)
+				o.onSend(ctx, val)
 			}
+			o.onProcessEnd(ctx)
+			o.statManager.SetBufferLength(int64(len(o.input)))
 		// is cancelling
 		case <-ctx.Done():
 			logger.Infof("unary operator %s instance %d cancelling....", o.name, ctx.GetInstanceId())
-			o.mutex.Lock()
 			cancel()
-			o.cancelled = true
-			o.mutex.Unlock()
 			return
 		}
 	}

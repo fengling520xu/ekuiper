@@ -1,4 +1,4 @@
-// Copyright 2021 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,19 +17,19 @@ package main
 import (
 	"fmt"
 
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
 )
 
 type echo struct{}
 
-func (f *echo) Validate(args []interface{}) error {
+func (f *echo) Validate(args []any) error {
 	if len(args) != 1 {
 		return fmt.Errorf("echo function only supports 1 parameter but got %d", len(args))
 	}
 	return nil
 }
 
-func (f *echo) Exec(args []interface{}, _ api.FunctionContext) (interface{}, bool) {
+func (f *echo) Exec(_ api.FunctionContext, args []any) (any, bool) {
 	result := args[0]
 	return result, true
 }
@@ -39,3 +39,5 @@ func (f *echo) IsAggregate() bool {
 }
 
 var Echo echo
+
+var _ api.Function = &echo{}

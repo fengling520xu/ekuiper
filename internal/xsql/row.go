@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,9 +17,12 @@ package xsql
 import (
 	"strings"
 	"sync"
+	"time"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
 )
 
 // The original message map may be big. Make sure it is immutable so that never make a copy of it.
@@ -31,21 +34,23 @@ import (
 
 type Wildcarder interface {
 	// All Value returns the value and existence flag for a given key.
-	All(stream string) (map[string]interface{}, bool)
+	All(table string) (map[string]any, bool)
 }
 
 type Event interface {
-	GetTimestamp() int64
+	GetTimestamp() time.Time
 	IsWatermark() bool
 }
 
 type ReadonlyRow interface {
+	HasTracerCtx
 	Valuer
 	AliasValuer
 	Wildcarder
 }
 
-type Row interface {
+// RawRow is the basic data type for logical row. It could be a row or a collection row.
+type RawRow interface {
 	ReadonlyRow
 	// Del Only for some ops like functionOp * and Alias
 	Del(col string)
@@ -53,20 +58,27 @@ type Row interface {
 	Set(col string, value interface{})
 	// ToMap converts the row to a map to export to other systems *
 	ToMap() map[string]interface{}
-	// Pick the columns and discard others. It replaces the underlying message with a new value. There are 3 types to pick: column, alias and annonymous expressions.
+	// Pick the columns and discard others. It replaces the underlying message with a new value. There are 3 types to pick: column, alias and anonymous expressions.
 	// cols is a list [columnname, tablename]
-	Pick(allWildcard bool, cols [][]string, wildcardEmitters map[string]bool, except []string)
+	Pick(allWildcard bool, cols [][]string, wildcardEmitters map[string]bool, except []string, sendNil bool)
 }
 
-type CloneAbleRow interface {
-	Row
-	// Clone when broadcast to make sure each row are dealt single threaded
-	Clone() CloneAbleRow
+type Row interface {
+	RawRow
+	Clone() Row
 }
 
-// TupleRow is a mutable row. Function with * could modify the row.
-type TupleRow interface {
-	CloneAbleRow
+type HasTracerCtx interface {
+	GetTracerCtx() api.StreamContext
+	SetTracerCtx(ctx api.StreamContext)
+}
+
+type MetaData interface {
+	MetaData() Metadata
+}
+
+// EmittedData is data that is produced by a specific source
+type EmittedData interface {
 	// GetEmitter returns the emitter of the row
 	GetEmitter() string
 }
@@ -74,10 +86,14 @@ type TupleRow interface {
 // CollectionRow is the aggregation row of a non-grouped collection. Thinks of it as a single group.
 // The row data is immutable
 type CollectionRow interface {
-	Row
+	RawRow
 	AggregateData
 	// Clone when broadcast to make sure each row are dealt single threaded
 	// Clone() CollectionRow
+}
+
+type ControlTuple interface {
+	ControlType() string
 }
 
 // AffiliateRow part of other row types do help calculation of newly added cols
@@ -188,7 +204,7 @@ func (d *AffiliateRow) Pick(cols [][]string) [][]string {
 	if len(cols) > 0 {
 		newAliasMap := make(map[string]interface{})
 		newCalCols := make(map[string]interface{})
-		var newCols [][]string
+		newCols := make([][]string, 0, len(cols))
 		for _, a := range cols {
 			if a[1] == "" || a[1] == string(ast.DefaultStream) {
 				if v, ok := d.AliasMap[a[0]]; ok {
@@ -219,6 +235,24 @@ func (d *AffiliateRow) Pick(cols [][]string) [][]string {
 // Message is a valuer that substitutes values for the mapped interface. It is the basic type for data events.
 type Message map[string]interface{}
 
+func (m Message) Get(key string) (value any, ok bool) {
+	v, o := m[key]
+	return v, o
+}
+
+func (m Message) Range(f func(key string, value any) bool) {
+	for k, v := range m {
+		exit := f(k, v)
+		if exit {
+			break
+		}
+	}
+}
+
+func (m Message) ToMap() map[string]any {
+	return m
+}
+
 var _ Valuer = Message{}
 
 type Metadata Message
@@ -232,53 +266,121 @@ type Alias struct {
  * All row types definitions, watermark, barrier
  */
 
+type RawTuple struct {
+	Ctx       api.StreamContext
+	Emitter   string
+	Timestamp time.Time
+	Rawdata   []byte
+	Metadata  Metadata // immutable
+	Props     map[string]string
+}
+
+func (r *RawTuple) GetTracerCtx() api.StreamContext {
+	return r.Ctx
+}
+
+func (r *RawTuple) SetTracerCtx(ctx api.StreamContext) {
+	r.Ctx = ctx
+}
+
+func (r *RawTuple) Replace(new []byte) {
+	r.Rawdata = new
+}
+
+func (r *RawTuple) DynamicProps(template string) (string, bool) {
+	v, ok := r.Props[template]
+	return v, ok
+}
+
+func (r *RawTuple) AllProps() map[string]string {
+	return r.Props
+}
+
+func (r *RawTuple) Raw() []byte {
+	return r.Rawdata
+}
+
+func (r *RawTuple) Meta(key, table string) (any, bool) {
+	v, ok := r.Metadata[key]
+	return v, ok
+}
+
+var (
+	_ api.RawTuple        = &RawTuple{}
+	_ api.HasDynamicProps = &RawTuple{}
+)
+
 // Tuple The input row, produced by the source
 type Tuple struct {
+	Ctx       api.StreamContext
 	Emitter   string
-	Message   Message // the original pointer is immutable & big; may be cloned
-	Timestamp int64
+	Message   Message // the original pointer is immutable & big; may be cloned.
+	Timestamp time.Time
 	Metadata  Metadata // immutable
+	Props     map[string]string
 
 	AffiliateRow
 	lock      sync.Mutex             // lock for the cachedMap, because it is possible to access by multiple sinks
 	cachedMap map[string]interface{} // clone of the row and cached for performance
 }
 
-var _ TupleRow = &Tuple{}
-
-type WatermarkTuple struct {
-	Timestamp int64
+func (t *Tuple) GetTracerCtx() api.StreamContext {
+	return t.Ctx
 }
 
-func (t *WatermarkTuple) GetTimestamp() int64 {
+func (t *Tuple) SetTracerCtx(ctx api.StreamContext) {
+	t.Ctx = ctx
+}
+
+func (t *Tuple) Created() time.Time {
 	return t.Timestamp
 }
 
-func (t *WatermarkTuple) IsWatermark() bool {
-	return true
+func (t *Tuple) AllMeta() map[string]any {
+	return t.Metadata
 }
+
+var (
+	_ Row          = &Tuple{}
+	_ MetaData     = &Tuple{}
+	_ api.MetaInfo = &Tuple{}
+)
 
 // JoinTuple is a row produced by a join operation
 type JoinTuple struct {
-	Tuples []TupleRow // The content is immutable, but the slice may be add or removed
+	Ctx    api.StreamContext
+	Tuples []Row // The content is immutable, but the slice may be added or removed
 	AffiliateRow
 	lock      sync.Mutex
 	cachedMap map[string]interface{} // clone of the row and cached for performance of toMap
 }
 
-func (jt *JoinTuple) AggregateEval(expr ast.Expr, v CallValuer) []interface{} {
-	return []interface{}{Eval(expr, MultiValuer(jt, v, &WildcardValuer{jt}))}
+func (jt *JoinTuple) GetTracerCtx() api.StreamContext {
+	return jt.Ctx
 }
 
-var _ TupleRow = &JoinTuple{}
+func (jt *JoinTuple) SetTracerCtx(ctx api.StreamContext) {
+	jt.Ctx = ctx
+}
+
+var _ Row = &JoinTuple{}
 
 // GroupedTuples is a collection of tuples grouped by a key
 type GroupedTuples struct {
-	Content []TupleRow
+	Ctx     api.StreamContext
+	Content []Row
 	*WindowRange
 	AffiliateRow
 	lock      sync.Mutex
 	cachedMap map[string]interface{} // clone of the row and cached for performance of toMap
+}
+
+func (s *GroupedTuples) GetTracerCtx() api.StreamContext {
+	return s.Ctx
+}
+
+func (s *GroupedTuples) SetTracerCtx(ctx api.StreamContext) {
+	s.Ctx = ctx
 }
 
 var _ CollectionRow = &GroupedTuples{}
@@ -307,7 +409,7 @@ func (m Message) Value(key, _ string) (interface{}, bool) {
 		return v, ok
 	} else if conf.Config == nil || conf.Config.Basic.IgnoreCase {
 		// Only when with 'SELECT * FROM ...'  and 'schemaless', the key in map is not convert to lower case.
-		// So all of keys in map should be convert to lowercase and then compare them.
+		// So all keys in map should be converted to lowercase and then compare them.
 		return m.getIgnoreCase(key)
 	} else {
 		return nil, false
@@ -357,11 +459,11 @@ func (t *Tuple) Value(key, table string) (interface{}, bool) {
 	return t.Message.Value(key, table)
 }
 
-func (t *Tuple) All(string) (map[string]interface{}, bool) {
+func (t *Tuple) All(string) (map[string]any, bool) {
 	return t.Message, true
 }
 
-func (t *Tuple) Clone() CloneAbleRow {
+func (t *Tuple) Clone() Row {
 	return &Tuple{
 		Emitter:      t.Emitter,
 		Timestamp:    t.Timestamp,
@@ -396,15 +498,28 @@ func (t *Tuple) Meta(key, table string) (interface{}, bool) {
 	return t.Metadata.Value(key, table)
 }
 
+func (t *Tuple) MetaData() Metadata {
+	return t.Metadata
+}
+
 func (t *Tuple) GetEmitter() string {
 	return t.Emitter
+}
+
+func (t *Tuple) DynamicProps(template string) (string, bool) {
+	r, ok := t.Props[template]
+	return r, ok
+}
+
+func (t *Tuple) AllProps() map[string]string {
+	return t.Props
 }
 
 func (t *Tuple) AggregateEval(expr ast.Expr, v CallValuer) []interface{} {
 	return []interface{}{Eval(expr, MultiValuer(t, v, &WildcardValuer{t}))}
 }
 
-func (t *Tuple) GetTimestamp() int64 {
+func (t *Tuple) GetTimestamp() time.Time {
 	return t.Timestamp
 }
 
@@ -415,13 +530,15 @@ func (t *Tuple) IsWatermark() bool {
 func (t *Tuple) FuncValue(key string) (interface{}, bool) {
 	switch key {
 	case "event_time":
-		return t.Timestamp, true
+		return t.Timestamp.UnixMilli(), true
 	default:
 		return nil, false
 	}
 }
 
-func (t *Tuple) Pick(allWildcard bool, cols [][]string, wildcardEmitters map[string]bool, except []string) {
+func (t *Tuple) Pick(allWildcard bool, cols [][]string, wildcardEmitters map[string]bool, except []string, sendNil bool) {
+	// invalidate cache, will calculate again
+	t.cachedMap = nil
 	cols = t.AffiliateRow.Pick(cols)
 	if !allWildcard && wildcardEmitters[t.Emitter] {
 		allWildcard = true
@@ -433,14 +550,14 @@ func (t *Tuple) Pick(allWildcard bool, cols [][]string, wildcardEmitters map[str
 				if colTab[1] == "" || colTab[1] == string(ast.DefaultStream) || colTab[1] == t.Emitter {
 					if v, ok := t.Message.Value(colTab[0], colTab[1]); ok {
 						pickedMap[colTab[0]] = v
+					} else if sendNil {
+						pickedMap[colTab[0]] = nil
 					}
 				}
 			}
 			t.Message = pickedMap
 		} else {
 			t.Message = make(map[string]interface{})
-			// invalidate cache, will calculate again
-			t.cachedMap = nil
 		}
 	} else if len(except) > 0 {
 		pickedMap := make(map[string]interface{})
@@ -455,11 +572,11 @@ func (t *Tuple) Pick(allWildcard bool, cols [][]string, wildcardEmitters map[str
 
 // JoinTuple implementation
 
-func (jt *JoinTuple) AddTuple(tuple TupleRow) {
+func (jt *JoinTuple) AddTuple(tuple Row) {
 	jt.Tuples = append(jt.Tuples, tuple)
 }
 
-func (jt *JoinTuple) AddTuples(tuples []TupleRow) {
+func (jt *JoinTuple) AddTuples(tuples []Row) {
 	jt.Tuples = append(jt.Tuples, tuples...)
 }
 
@@ -481,7 +598,7 @@ func (jt *JoinTuple) doGetValue(key, table string, isVal bool) (interface{}, boo
 	} else {
 		// TODO should use hash here
 		for _, tuple := range tuples {
-			if tuple.GetEmitter() == table {
+			if et, ok := tuple.(EmittedData); ok && et.GetEmitter() == table {
 				return getTupleValue(tuple, key, isVal)
 			}
 		}
@@ -516,7 +633,7 @@ func (jt *JoinTuple) Meta(key, table string) (interface{}, bool) {
 func (jt *JoinTuple) All(stream string) (map[string]interface{}, bool) {
 	if stream != "" {
 		for _, t := range jt.Tuples {
-			if t.GetEmitter() == stream {
+			if et, ok := t.(EmittedData); ok && et.GetEmitter() == stream {
 				return t.All("")
 			}
 		}
@@ -532,10 +649,10 @@ func (jt *JoinTuple) All(stream string) (map[string]interface{}, bool) {
 	return result, true
 }
 
-func (jt *JoinTuple) Clone() CloneAbleRow {
-	ts := make([]TupleRow, len(jt.Tuples))
+func (jt *JoinTuple) Clone() Row {
+	ts := make([]Row, len(jt.Tuples))
 	for i, t := range jt.Tuples {
-		ts[i] = t.Clone().(TupleRow)
+		ts[i] = t.Clone().(Row)
 	}
 	c := &JoinTuple{
 		Tuples:       ts,
@@ -560,16 +677,18 @@ func (jt *JoinTuple) ToMap() map[string]interface{} {
 	return jt.cachedMap
 }
 
-func (jt *JoinTuple) Pick(allWildcard bool, cols [][]string, wildcardEmitters map[string]bool, except []string) {
+func (jt *JoinTuple) Pick(allWildcard bool, cols [][]string, wildcardEmitters map[string]bool, except []string, sendNil bool) {
 	cols = jt.AffiliateRow.Pick(cols)
 	if !allWildcard {
 		if len(cols) > 0 {
 			for i, tuple := range jt.Tuples {
-				if _, ok := wildcardEmitters[tuple.GetEmitter()]; ok {
-					continue
+				if et, ok := tuple.(EmittedData); ok {
+					if _, ok := wildcardEmitters[et.GetEmitter()]; ok {
+						continue
+					}
 				}
-				nt := tuple.Clone().(TupleRow)
-				nt.Pick(allWildcard, cols, wildcardEmitters, except)
+				nt := tuple.Clone().(Row)
+				nt.Pick(allWildcard, cols, wildcardEmitters, except, sendNil)
 				jt.Tuples[i] = nt
 			}
 		} else {
@@ -577,6 +696,10 @@ func (jt *JoinTuple) Pick(allWildcard bool, cols [][]string, wildcardEmitters ma
 		}
 	}
 	jt.cachedMap = nil
+}
+
+func (jt *JoinTuple) AggregateEval(expr ast.Expr, v CallValuer) []interface{} {
+	return []interface{}{Eval(expr, MultiValuer(jt, v, &WildcardValuer{jt}))}
 }
 
 // GroupedTuple implementation
@@ -619,8 +742,8 @@ func (s *GroupedTuples) ToMap() map[string]interface{} {
 	return s.cachedMap
 }
 
-func (s *GroupedTuples) Clone() CloneAbleRow {
-	ts := make([]TupleRow, len(s.Content))
+func (s *GroupedTuples) Clone() Row {
+	ts := make([]Row, len(s.Content))
 	for i, t := range s.Content {
 		ts[i] = t
 	}
@@ -632,9 +755,9 @@ func (s *GroupedTuples) Clone() CloneAbleRow {
 	return c
 }
 
-func (s *GroupedTuples) Pick(allWildcard bool, cols [][]string, wildcardEmitters map[string]bool, except []string) {
+func (s *GroupedTuples) Pick(allWildcard bool, cols [][]string, wildcardEmitters map[string]bool, except []string, sendNil bool) {
 	cols = s.AffiliateRow.Pick(cols)
-	sc := s.Content[0].Clone().(TupleRow)
-	sc.Pick(allWildcard, cols, wildcardEmitters, except)
+	sc := s.Content[0].Clone()
+	sc.Pick(allWildcard, cols, wildcardEmitters, except, sendNil)
 	s.Content[0] = sc
 }

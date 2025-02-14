@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,12 +17,14 @@ package protobuf
 import (
 	"fmt"
 
-	"github.com/jhump/protoreflect/desc"
-	"github.com/jhump/protoreflect/desc/protoparse"
+	"github.com/jhump/protoreflect/desc"            //nolint:staticcheck
+	"github.com/jhump/protoreflect/desc/protoparse" //nolint:staticcheck
+	"github.com/lf-edge/ekuiper/contract/v2/api"
 
-	kconf "github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/converter/static"
-	"github.com/lf-edge/ekuiper/pkg/message"
+	kconf "github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/converter/static"
+	"github.com/lf-edge/ekuiper/v2/pkg/errorx"
+	"github.com/lf-edge/ekuiper/v2/pkg/message"
 )
 
 type Converter struct {
@@ -57,7 +59,12 @@ func NewConverter(schemaFile string, soFile string, messageName string) (message
 	}
 }
 
-func (c *Converter) Encode(d interface{}) ([]byte, error) {
+func (c *Converter) Encode(ctx api.StreamContext, d any) (b []byte, err error) {
+	defer func() {
+		if err != nil {
+			err = errorx.NewWithCode(errorx.CovnerterErr, err.Error())
+		}
+	}()
 	switch m := d.(type) {
 	case map[string]interface{}:
 		msg, err := c.fc.encodeMap(c.descriptor, m)
@@ -70,9 +77,14 @@ func (c *Converter) Encode(d interface{}) ([]byte, error) {
 	}
 }
 
-func (c *Converter) Decode(b []byte) (interface{}, error) {
+func (c *Converter) Decode(ctx api.StreamContext, b []byte) (m any, err error) {
+	defer func() {
+		if err != nil {
+			err = errorx.NewWithCode(errorx.CovnerterErr, err.Error())
+		}
+	}()
 	result := mf.NewDynamicMessage(c.descriptor)
-	err := result.Unmarshal(b)
+	err = result.Unmarshal(b)
 	if err != nil {
 		return nil, err
 	}

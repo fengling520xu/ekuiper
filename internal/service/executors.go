@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,16 +25,18 @@ import (
 	"time"
 
 	// TODO: replace with `google.golang.org/protobuf/proto` pkg.
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
-	"github.com/jhump/protoreflect/dynamic"
-	"github.com/jhump/protoreflect/dynamic/grpcdynamic"
+	"github.com/golang/protobuf/proto"                  //nolint:staticcheck
+	"github.com/jhump/protoreflect/dynamic"             //nolint:staticcheck
+	"github.com/jhump/protoreflect/dynamic/grpcdynamic" //nolint:staticcheck
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+	"github.com/pingcap/failpoint"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/lf-edge/ekuiper/internal/pkg/httpx"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/cast"
-	"github.com/lf-edge/ekuiper/pkg/infra"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/httpx"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/errorx"
+	"github.com/lf-edge/ekuiper/v2/pkg/infra"
 )
 
 type exeIns func(desc descriptor, opt *interfaceOpt, i *interfaceInfo) (executor, error)
@@ -51,6 +53,13 @@ func newHttpExecutor(desc descriptor, opt *interfaceOpt, i *interfaceInfo) (exec
 	}
 	o := &restOption{}
 	e := cast.MapToStruct(i.Options, o)
+	if len(o.RetryInterval) > 0 {
+		d, err := time.ParseDuration(o.RetryInterval)
+		if err != nil {
+			return nil, fmt.Errorf("incorrect rest option: %v", err)
+		}
+		o.retryIntervalDuration = d
+	}
 	if e != nil {
 		return nil, fmt.Errorf("incorrect rest option: %v", e)
 	}
@@ -88,7 +97,7 @@ func NewExecutor(i *interfaceInfo) (executor, error) {
 	}
 	opt := &interfaceOpt{
 		addr:    u,
-		timeout: 5000,
+		timeout: 5 * time.Second,
 	}
 
 	if ins, ok := executors[i.Protocol]; ok {
@@ -104,7 +113,7 @@ type executor interface {
 
 type interfaceOpt struct {
 	addr    *url.URL
-	timeout int64
+	timeout time.Duration
 }
 
 type grpcExecutor struct {
@@ -116,14 +125,14 @@ type grpcExecutor struct {
 
 func (d *grpcExecutor) InvokeFunction(_ api.FunctionContext, name string, params []interface{}) (interface{}, error) {
 	if d.conn == nil {
-		dialCtx, cancel := context.WithTimeout(context.Background(), time.Duration(d.timeout)*time.Millisecond)
+		dialCtx, cancel := context.WithTimeout(context.Background(), d.timeout)
 		var (
 			conn *grpc.ClientConn
 			e    error
 		)
 		go infra.SafeRun(func() error {
 			defer cancel()
-			conn, e = grpc.DialContext(dialCtx, d.addr.Host, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+			conn, e = grpc.DialContext(dialCtx, d.addr.Host, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock()) //nolint:staticcheck
 			return e
 		})
 
@@ -151,7 +160,7 @@ func (d *grpcExecutor) InvokeFunction(_ api.FunctionContext, name string, params
 	if err != nil {
 		return nil, err
 	}
-	timeoutCtx, cancel := context.WithTimeout(context.Background(), time.Duration(d.timeout)*time.Millisecond)
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), d.timeout)
 	var (
 		o proto.Message
 		e error
@@ -175,7 +184,7 @@ func (d *grpcExecutor) InvokeFunction(_ api.FunctionContext, name string, params
 		}
 	}
 	if e != nil {
-		return nil, fmt.Errorf("error invoking method %s in proto: %v", name, err)
+		return nil, fmt.Errorf("error invoking method %s in proto: %v", name, e)
 	}
 	odm, err := dynamic.AsDynamicMessage(o)
 	if err != nil {
@@ -192,14 +201,51 @@ type httpExecutor struct {
 	conn *http.Client
 }
 
+var testIndex int
+
 func (h *httpExecutor) InvokeFunction(ctx api.FunctionContext, name string, params []interface{}) (interface{}, error) {
+	if h.restOpt.RetryCount < 1 {
+		return h.invokeFunction(ctx, name, params)
+	}
+	var err error
+	var result interface{}
+	for i := 0; i < h.restOpt.RetryCount; i++ {
+		if i > 0 {
+			time.Sleep(h.restOpt.retryIntervalDuration)
+		}
+		result, err = h.invokeFunction(ctx, name, params)
+		failpoint.Inject("httpExecutorRetry", func(val failpoint.Value) {
+			if val.(bool) {
+				if testIndex < 1 {
+					err = &url.Error{Err: &errorx.MockTemporaryError{}}
+					testIndex++
+				}
+			}
+		})
+		if err == nil {
+			return result, nil
+		}
+		if !errorx.IsRecoverAbleError(err) {
+			return nil, err
+		}
+	}
+	return nil, err
+}
+
+func (h *httpExecutor) invokeFunction(ctx api.FunctionContext, name string, params []interface{}) (interface{}, error) {
+	failpoint.Inject("httpExecutorRetry", func(val failpoint.Value) {
+		if val.(bool) {
+			failpoint.Return(nil, nil)
+		}
+	})
+
 	if h.conn == nil {
 		tr := &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: h.restOpt.InsecureSkipVerify},
 		}
 		h.conn = &http.Client{
 			Transport: tr,
-			Timeout:   time.Duration(h.timeout) * time.Millisecond,
+			Timeout:   h.timeout,
 		}
 	}
 
@@ -212,7 +258,7 @@ func (h *httpExecutor) InvokeFunction(ctx api.FunctionContext, name string, para
 	if err != nil {
 		return nil, err
 	}
-	resp, err := httpx.Send(ctx.GetLogger(), h.conn, "json", hm.Method, u, h.restOpt.Headers, false, hm.Body)
+	resp, err := httpx.Send(ctx.GetLogger(), h.conn, "json", hm.Method, u, h.restOpt.Headers, hm.Body)
 	if err != nil {
 		return nil, err
 	}

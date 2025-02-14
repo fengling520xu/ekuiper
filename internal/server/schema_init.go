@@ -1,4 +1,4 @@
-// Copyright 2022 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,20 +13,22 @@
 // limitations under the License.
 
 //go:build schema || !core
-// +build schema !core
 
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"net/http"
 
 	"github.com/gorilla/mux"
 
-	"github.com/lf-edge/ekuiper/internal/pkg/def"
-	"github.com/lf-edge/ekuiper/internal/schema"
-	"github.com/lf-edge/ekuiper/pkg/errorx"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/schema"
+	"github.com/lf-edge/ekuiper/v2/pkg/errorx"
+	"github.com/lf-edge/ekuiper/v2/pkg/validate"
 )
 
 func init() {
@@ -45,6 +47,10 @@ func (sc schemaComp) register() {
 func (sc schemaComp) rest(r *mux.Router) {
 	r.HandleFunc("/schemas/{type}", schemasHandler).Methods(http.MethodGet, http.MethodPost)
 	r.HandleFunc("/schemas/{type}/{name}", schemaHandler).Methods(http.MethodPut, http.MethodDelete, http.MethodGet)
+}
+
+func (sc schemaComp) exporter() ConfManager {
+	return schemaExporter{}
 }
 
 func schemasHandler(w http.ResponseWriter, r *http.Request) {
@@ -66,6 +72,10 @@ func schemasHandler(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err, "Invalid body: Error decoding schema json", logger)
 			return
 		}
+		if err := validate.ValidatePath(sch.FilePath); err != nil {
+			handleError(w, err, "", logger)
+			return
+		}
 		if err = sch.Validate(); err != nil {
 			handleError(w, nil, "Invalid body", logger)
 			return
@@ -76,7 +86,8 @@ func schemasHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, "%s schema %s is created", sch.Type, sch.Name)
+		tmpl := template.Must(template.New("response").Parse("{{.Type}} schema {{.Name}} is created"))
+		tmpl.Execute(w, sch)
 	}
 }
 
@@ -102,8 +113,14 @@ func schemaHandler(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err, fmt.Sprintf("delete %s schema %s error", st, name), logger)
 			return
 		}
+		sch := &schema.Info{Type: def.SchemaType(st), Name: name}
+		tmpl := template.Must(template.New("response").Parse("{{.Type}} schema {{.Name}} is deleted"))
+		err = tmpl.Execute(w, sch)
+		if err != nil {
+			handleError(w, err, "schema update command error", logger)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "%s schema %s is deleted", st, name)
 	case http.MethodPut:
 		sch := &schema.Info{Type: def.SchemaType(st), Name: name}
 		err := json.NewDecoder(r.Body).Decode(sch)
@@ -124,31 +141,38 @@ func schemaHandler(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err, "schema update command error", logger)
 			return
 		}
+		tmpl := template.Must(template.New("response").Parse("{{.Type}} schema {{.Name}} is updated"))
+		err = tmpl.Execute(w, sch)
+		if err != nil {
+			handleError(w, err, "schema update command error", logger)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "%s schema %s is updated", sch.Type, sch.Name)
 	}
 }
 
-func schemaReset() {
-	schema.UninstallAllSchema()
+type schemaExporter struct{}
+
+func (e schemaExporter) Import(ctx context.Context, s map[string]string) map[string]string {
+	return schema.ImportSchema(ctx, s)
 }
 
-func schemaExport() map[string]string {
+func (e schemaExporter) PartialImport(ctx context.Context, s map[string]string) map[string]string {
+	return schema.SchemaPartialImport(ctx, s)
+}
+
+func (e schemaExporter) Export() map[string]string {
 	return schema.GetAllSchema()
 }
 
-func schemaStatusExport() map[string]string {
+func (e schemaExporter) Status() map[string]string {
 	return schema.GetAllSchemaStatus()
 }
 
-func schemaImport(s map[string]string) error {
-	return schema.ImportSchema(s)
+func (e schemaExporter) Reset() {
+	schema.UninstallAllSchema()
 }
 
-func schemaPartialImport(s map[string]string) map[string]string {
-	return schema.SchemaPartialImport(s)
-}
-
-func getSchemaInstallScript(s string) (string, string) {
+func (e schemaExporter) InstallScript(s string) (string, string) {
 	return schema.GetSchemaInstallScript(s)
 }

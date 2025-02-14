@@ -1,4 +1,4 @@
-// Copyright 2021 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,17 +23,15 @@ const (
 	SINK
 	FUNCTION
 	PORTABLE
-	WASM
 )
 
-var PluginTypes = []string{"sources", "sinks", "functions", "portable", "wasm"}
+var PluginTypes = []string{"sources", "sinks", "functions", "portable"}
 
 var PluginTypeMap = map[string]PluginType{
 	"sources":   SOURCE,
 	"sinks":     SINK,
 	"functions": FUNCTION,
 	"portable":  PORTABLE,
-	"wasm":      WASM,
 }
 
 type Plugin interface {
@@ -47,9 +45,9 @@ type Plugin interface {
 
 // IOPlugin Unify model. Flat all properties for each kind.
 type IOPlugin struct {
-	Name       string   `json:"name"`
-	File       string   `json:"file"`
-	ShellParas []string `json:"shellParas"`
+	Name       string   `json:"name" yaml:"name"`
+	File       string   `json:"file" yaml:"file"`
+	ShellParas []string `json:"shellParas,omitempty" yaml:"shellParas,omitempty"`
 }
 
 func (p *IOPlugin) GetName() string {
@@ -84,8 +82,6 @@ func NewPluginByType(t PluginType) Plugin {
 	switch t {
 	case FUNCTION:
 		return &FuncPlugin{}
-	case WASM:
-		return &FuncPlugin{}
 	default:
 		return &IOPlugin{}
 	}
@@ -109,5 +105,9 @@ const (
 	NATIVE_EXTENSION
 	PORTABLE_EXTENSION
 	SERVICE_EXTENSION
-	WASM_EXTENSION
+	JS_EXTENSION
 )
+
+var ExtensionTypes = []string{
+	"none", "internal", "native", "portable", "service", "wasm", "js",
+}

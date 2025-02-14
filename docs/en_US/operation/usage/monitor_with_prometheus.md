@@ -4,6 +4,15 @@ Prometheus is an open source system monitoring and alerting toolkit hosted at CN
 
 eKuiper's rules are continuously running streaming task. Rules are used to process unbounded streams of data, and under normal circumstances, rules are started and run continuously, producing operational status data. Until the rule is stopped manually or after an unrecoverable error. eKuiper provides a status API to get the running metrics of the rules. At the same time, eKuiper integrates with Prometheus, making it easy to monitor various status metrics through the latter. This tutorial is intended for users who are already familiar with eKuiper and will introduce rule status metrics and how to monitor specific indicators via Prometheus.
 
+## Prometheus Metrics
+
+eKuiper exposes the following metrics to prometheus to reflect the current cluster status:
+
+```text
+kuiper_rule_status: The status showed status of each rule in eKuiper. 1 represents running, 0 represents paused, and -1 represents abnormal exit.
+kuiper_rule_count: How many rules are running and how many rules are suspended in eKuiper.
+```
+
 ## Rule Status Metrics
 
 Once a rule has been created and run successfully using eKuiper, the user can view the rule's operational status metrics via the CLI, REST API or the management console. For example, for an existing rule1, you can get the rule run metrics in JSON format via `curl -X GET "http://127.0.0.1:9081/rules/rule1/status"`.
@@ -11,6 +20,9 @@ Once a rule has been created and run successfully using eKuiper, the user can vi
 ```json
 {
   "status": "running",
+  "lastStartTimestamp": "1712126817659",
+  "lastStopTimestamp": "0",
+  "nextStopTimestamp": "0",
   "source_demo_0_records_in_total": 265,
   "source_demo_0_records_out_total": 265,
   "source_demo_0_process_latency_us": 0,
@@ -38,7 +50,9 @@ Once a rule has been created and run successfully using eKuiper, the user can vi
 }
 ```
 
-The rule status consists of two main parts, one is the status, which is used to indicate whether the rule is running properly or not, its value may be `running`, `stopped manually`, etc. The other part is the metrics for each operator of the rule. The operator of the rule is generated based on the SQL of the rule, which may be different for each rule. In this example, the rule SQL is the simplest `SELECT * FROM demo`, the action is MQTT, and the generated operators are [source_demo, op_project, sink_mqtt]. Each of these operators has the same kind of metrics, which together with the operator names form a single metric. For example, the metric for the number of records_in_total for the operator source_demo_0 is `source_demo_0_records_in_total`.
+The rule status consists of two main parts, one is the status, which is used to indicate whether the rule is running properly or not, its value may be `running`, `stopped manually`, etc. And it contains the unix timestamp in milliseconds of when the rule was started and when it was paused.
+
+The other part is the metrics for each operator of the rule. The operator of the rule is generated based on the SQL of the rule, which may be different for each rule. In this example, the rule SQL is the simplest `SELECT * FROM demo`, the action is MQTT, and the generated operators are [source_demo, op_project, sink_mqtt]. Each of these operators has the same kind of metrics, which together with the operator names form a single metric. For example, the metric for the number of records_in_total for the operator source_demo_0 is `source_demo_0_records_in_total`.
 
 ### Metric Types
 
@@ -56,7 +70,19 @@ After version 1.6.1, we added two more exception-related metrics to facilitate t
 - last_exception: the error message of the last exception.
 - last_exception_time: the time of the last exception.
 
+After version 2.0.0, we added connection-related metrics for source/sink.
+
+- connection_status: Connection status. 1 for connected, 0 for connecting, -1 for disconnected.
+- connection_last_connected_time: The last successful connection time.
+- connection_last_disconnected_time: The last disconnection time.
+- connection_last_disconnected_message: The message of the last disconnection exception.
+- connection_last_try_time: The last reconnection attempt time.
+
 The numeric types of these metrics can all be monitored using Prometheus. In the next section we will describe how to configure the Prometheus service in eKuiper.
+
+View CPU running metrics for a rule
+
+- kuiper_rule_cpu_ms: The CPU running indicator of the rule represents the CPU time used by the CPU in the past 30 seconds, in ms.
 
 ## Configuring the Prometheus Service in eKuiper
 
@@ -122,6 +148,42 @@ Monitor the number of messages received by the sink for all rules. You can enter
 ![Set monitor in prometheus](./resources/prom.png)
 
 Click `Add Panel` to monitor more metrics in the same way.
+
+### View the dashboard via Grafana
+
+Grafana is a monitoring instrument system. It is a system monitoring tool open sourced by Grafana Labs. It can greatly help us simplify the complexity of monitoring. We only need to provide the data that needs to be monitored, and it can help generate various visual instruments. .
+
+eKuiper is predefined in the Grafana panel to help users more clearly and intuitively observe the current running status of eKuiper from Prometheus monitoring data. You can use the Grafama Dashboard Import function to copy the json content in the following link into grafana to obtain the panel.
+
+```shell
+https://github.com/lf-edge/ekuiper/blob/master/metrics/metrics.json
+```
+
+Install eKuiper Dashboard
+
+Before introducing the eKuiper monitoring panel to grafana, you need to ensure that grafana has configured prometheus as a data source, and that prometheus has collected eKuiper monitoring data.
+
+![New dashboard in grafana](./resources/import.png)
+
+Copy metrics json into the text box and click Load.
+
+![Load metrics in grafana](./resources/paste.png)
+
+Set the Dashboard name and set the corresponding prometheus data source.
+
+![Import Dashboard in grafana](./resources/import-2.png)
+
+After we introduce the panel, we can view the corresponding eKuiper instance and the metrics associated with the corresponding rules in the instance in the selection bar on the page.
+
+![Pick metrics in grafana](./resources/pick.png)
+
+You can view the historical status of the rule through the following panel. 1 means the rule is running, 0 means the rule is suspended normally, and -1 means the rule exited abnormally. The metric is `kuiper_rule_status`.
+
+![rule status](./resources/ruleStatus.png)
+
+You can view how many running rules and paused rules there are inside eKuiper through the following panel. The metric is `kuiper_rule_count`.
+
+![rule count](./resources/ruleCount.png)
 
 ## Summary
 

@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,29 +17,25 @@
 package io
 
 import (
-	image "github.com/lf-edge/ekuiper/extensions/sinks/image/ext"
-	influx "github.com/lf-edge/ekuiper/extensions/sinks/influx/ext"
-	influx2 "github.com/lf-edge/ekuiper/extensions/sinks/influx2/ext"
-	kafka "github.com/lf-edge/ekuiper/extensions/sinks/kafka/ext"
-	sqlSink "github.com/lf-edge/ekuiper/extensions/sinks/sql/ext"
-	random "github.com/lf-edge/ekuiper/extensions/sources/random/ext"
-	sql "github.com/lf-edge/ekuiper/extensions/sources/sql/ext"
-	video "github.com/lf-edge/ekuiper/extensions/sources/video/ext"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/extensions/impl/image"
+	"github.com/lf-edge/ekuiper/v2/extensions/impl/influx"
+	"github.com/lf-edge/ekuiper/v2/extensions/impl/influx2"
+	"github.com/lf-edge/ekuiper/v2/extensions/impl/kafka"
+	sql2 "github.com/lf-edge/ekuiper/v2/extensions/impl/sql"
+	"github.com/lf-edge/ekuiper/v2/extensions/impl/video"
+	"github.com/lf-edge/ekuiper/v2/pkg/modules"
 )
 
 func init() {
-	sources["random"] = func() api.Source { return random.GetSource() }
-	sources["video"] = func() api.Source { return video.GetSource() }
-	sources["sql"] = func() api.Source { return sql.GetSource() }
-	lookupSources["sql"] = func() api.LookupSource { return sql.GetLookup() }
-	sinks["image"] = func() api.Sink { return image.GetSink() }
-	sinks["influx"] = func() api.Sink { return influx.GetSink() }
-	sinks["influx2"] = func() api.Sink { return influx2.GetSink() }
-	sinks["kafka"] = func() api.Sink { return kafka.GetSink() }
-	sinks["sql"] = func() api.Sink { return sqlSink.GetSink() }
-	// Do not include zmq/tdengine because it is not supported for all versions
-	// sinks["tdengine"] = func() api.Sink { return tdengine.GetSink() }
-	// sinks["zmq"] = func() api.Sink { return zmqSink.GetSink() }
-	// sources["zmq"] = func() api.Source { return zmq.GetSource() }
+	modules.RegisterSource("video", func() api.Source { return video.GetSource() })
+	modules.RegisterSource("kafka", func() api.Source { return kafka.GetSource() })
+	modules.RegisterSink("kafka", func() api.Sink { return kafka.GetSink() })
+	modules.RegisterSink("image", func() api.Sink { return image.GetSink() })
+	modules.RegisterSink("influx", func() api.Sink { return influx.GetSink() })
+	modules.RegisterSink("influx2", func() api.Sink { return influx2.GetSink() })
+	modules.RegisterSource("sql", sql2.GetSource)
+	modules.RegisterLookupSource("sql", sql2.GetLookupSource)
+	modules.RegisterSink("sql", sql2.GetSink)
 }

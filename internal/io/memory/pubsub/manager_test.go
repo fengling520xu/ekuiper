@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,8 +22,7 @@ import (
 	"testing"
 
 	"github.com/gdexlab/go-render/render"
-
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestCreateAndClose(t *testing.T) {
@@ -31,7 +30,7 @@ func TestCreateAndClose(t *testing.T) {
 	var (
 		sourceTopics = []string{"h/d1/c1/s2", "h/+/+/s1", "h/d3/#", "h/d1/c1/s2", "h/+/c1/s1"}
 		sinkTopics   = []string{"h/d1/c1/s1", "h/d1/c1/s2", "h/d2/c2/s1", "h/d3/c3/s1", "h/d1/c1/s1"}
-		chans        []chan api.SourceTuple
+		chans        []chan any
 	)
 	for i, topic := range sinkTopics {
 		CreatePub(topic)
@@ -53,27 +52,27 @@ func TestCreateAndClose(t *testing.T) {
 	expPub := map[string]*pubConsumers{
 		"h/d1/c1/s1": {
 			count: 2,
-			consumers: map[string]chan api.SourceTuple{
+			consumers: map[string]chan any{
 				"1": chans[1],
 				"4": chans[4],
 			},
 		},
 		"h/d1/c1/s2": {
 			count: 1,
-			consumers: map[string]chan api.SourceTuple{
+			consumers: map[string]chan any{
 				"0": chans[0],
 				"3": chans[3],
 			},
 		},
 		"h/d2/c2/s1": {
 			count: 1,
-			consumers: map[string]chan api.SourceTuple{
+			consumers: map[string]chan any{
 				"1": chans[1],
 			},
 		},
 		"h/d3/c3/s1": {
 			count: 1,
-			consumers: map[string]chan api.SourceTuple{
+			consumers: map[string]chan any{
 				"1": chans[1],
 				"2": chans[2],
 			},
@@ -92,19 +91,19 @@ func TestCreateAndClose(t *testing.T) {
 	expPub = map[string]*pubConsumers{
 		"h/d1/c1/s1": {
 			count: 1,
-			consumers: map[string]chan api.SourceTuple{
+			consumers: map[string]chan any{
 				"4": chans[4],
 			},
 		},
 		"h/d1/c1/s2": {
 			count: 0,
-			consumers: map[string]chan api.SourceTuple{
+			consumers: map[string]chan any{
 				"3": chans[3],
 			},
 		},
 		"h/d3/c3/s1": {
 			count:     1,
-			consumers: map[string]chan api.SourceTuple{},
+			consumers: map[string]chan any{},
 		},
 	}
 	if !reflect.DeepEqual(expPub, pubTopics) {
@@ -125,4 +124,54 @@ func getRegexp(topic string) (*regexp.Regexp, error) {
 	}
 	regstr := strings.Replace(strings.ReplaceAll(topic, "+", "([^/]+)"), "#", ".", 1)
 	return regexp.Compile(regstr)
+}
+
+func TestCreateBeforeDelete(t *testing.T) {
+	Reset()
+	var chans []chan any
+	CreatePub("test")
+	// create first sub
+	c := CreateSub("test", nil, "source1", 100)
+	chans = append(chans, c)
+	// create sub again
+	c2 := CreateSub("test", nil, "source1", 100)
+	chans = append(chans, c2)
+	CloseSourceConsumerChannel("test", "source1")
+	expPub := map[string]*pubConsumers{
+		"test": {
+			count: 1,
+			consumers: map[string]chan any{
+				"source1": chans[1],
+			},
+			consumersReplaced: map[string]int{"source1": 0},
+		},
+	}
+	assert.Equal(t, expPub, pubTopics)
+
+	CloseSourceConsumerChannel("test", "source1")
+	c3 := CreateSub("test", nil, "source1", 100)
+	expPub = map[string]*pubConsumers{
+		"test": {
+			count: 1,
+			consumers: map[string]chan any{
+				"source1": c3,
+			},
+			consumersReplaced: map[string]int{"source1": 0},
+		},
+	}
+	assert.Equal(t, expPub, pubTopics)
+
+	c4 := CreateSub("test", nil, "source1", 100)
+	CloseSourceConsumerChannel("test", "source1")
+
+	expPub = map[string]*pubConsumers{
+		"test": {
+			count: 1,
+			consumers: map[string]chan any{
+				"source1": c4,
+			},
+			consumersReplaced: map[string]int{"source1": 0},
+		},
+	}
+	assert.Equal(t, expPub, pubTopics)
 }

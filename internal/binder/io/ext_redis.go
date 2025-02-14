@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,14 +17,13 @@
 package io
 
 import (
-	"github.com/lf-edge/ekuiper/internal/io/redis"
-	"github.com/lf-edge/ekuiper/internal/io/redis/pubsub"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/v2/internal/io/redis"
+	"github.com/lf-edge/ekuiper/v2/pkg/modules"
 )
 
 func init() {
-	lookupSources["redis"] = func() api.LookupSource { return redis.GetLookupSource() }
-	sinks["redis"] = func() api.Sink { return redis.GetSink() }
-	sinks["redisPub"] = func() api.Sink { return pubsub.RedisPub() }
-	sources["redisSub"] = func() api.Source { return pubsub.RedisSub() }
+	modules.RegisterLookupSource("redis", redis.GetLookupSource)
+	modules.RegisterSink("redis", redis.GetSink)
+	modules.RegisterSink("redisPub", redis.RedisPub)
+	modules.RegisterSource("redisSub", redis.RedisSub)
 }

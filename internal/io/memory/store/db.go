@@ -19,8 +19,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/io/memory/pubsub"
 )
 
 type tableCount struct {
@@ -111,19 +111,19 @@ type Table struct {
 	topic string
 	key   string
 	// datamap is the overall data indexed by primary key
-	datamap map[interface{}]api.SourceTuple
+	datamap map[any]pubsub.MemTuple
 	cancel  context.CancelFunc
 }
 
 func createTable(topic string, key string) *Table {
-	t := &Table{topic: topic, key: key, datamap: make(map[interface{}]api.SourceTuple)}
+	t := &Table{topic: topic, key: key, datamap: make(map[any]pubsub.MemTuple)}
 	return t
 }
 
-func (t *Table) add(value api.SourceTuple) {
+func (t *Table) add(value pubsub.MemTuple) {
 	t.Lock()
 	defer t.Unlock()
-	keyval, ok := value.Message()[t.key]
+	keyval, ok := value.Value(t.key, "")
 	if !ok {
 		conf.Log.Errorf("add to table %s omitted, value not found for key %s", t.topic, t.key)
 	}
@@ -136,11 +136,11 @@ func (t *Table) delete(key interface{}) {
 	delete(t.datamap, key)
 }
 
-func (t *Table) Read(keys []string, values []interface{}) ([]api.SourceTuple, error) {
+func (t *Table) Read(keys []string, values []interface{}) ([]pubsub.MemTuple, error) {
 	t.RLock()
 	defer t.RUnlock()
 	// Find the primary key
-	var matched api.SourceTuple
+	var matched pubsub.MemTuple
 	for i, k := range keys {
 		if k == t.key {
 			matched = t.datamap[values[i]]
@@ -149,22 +149,22 @@ func (t *Table) Read(keys []string, values []interface{}) ([]api.SourceTuple, er
 	if matched != nil {
 		match := true
 		for i, k := range keys {
-			if val, ok := matched.Message()[k]; !ok || val != values[i] {
+			if val, ok := matched.Value(k, ""); !ok || val != values[i] {
 				match = false
 				break
 			}
 		}
 		if match {
-			return []api.SourceTuple{matched}, nil
+			return []pubsub.MemTuple{matched}, nil
 		} else {
 			return nil, nil
 		}
 	}
-	var result []api.SourceTuple
+	var result []pubsub.MemTuple
 	for _, v := range t.datamap {
 		match := true
 		for i, k := range keys {
-			if val, ok := v.Message()[k]; !ok || val != values[i] {
+			if val, ok := v.Value(k, ""); !ok || val != values[i] {
 				match = false
 				break
 			}

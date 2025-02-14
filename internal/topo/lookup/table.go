@@ -1,4 +1,4 @@
-// Copyright 2022 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,19 +19,20 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/lf-edge/ekuiper/internal/binder/io"
-	"github.com/lf-edge/ekuiper/internal/conf"
-	kctx "github.com/lf-edge/ekuiper/internal/topo/context"
-	nodeConf "github.com/lf-edge/ekuiper/internal/topo/node/conf"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/binder/io"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	kctx "github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	nodeConf "github.com/lf-edge/ekuiper/v2/internal/topo/node/conf"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
 )
 
 // Table is a lookup table runtime instance. It will run once the table is created.
 // It will only stop once the table is dropped.
 
 type info struct {
-	ls    api.LookupSource
+	ls    api.Source
 	count int32
 }
 
@@ -41,7 +42,7 @@ var (
 )
 
 // Attach called by lookup nodes. Add a count to the info
-func Attach(name string) (api.LookupSource, error) {
+func Attach(name string) (api.Source, error) {
 	lock.Lock()
 	defer lock.Unlock()
 	if i, ok := instances[name]; ok {
@@ -77,12 +78,15 @@ func CreateInstance(name string, sourceType string, options *ast.Options) error 
 		return err
 	}
 	ctx.GetLogger().Debugf("lookup source %s is created", sourceType)
-	err = ns.Configure(options.DATASOURCE, props)
+	err = ns.Provision(ctx, props)
 	if err != nil {
 		return err
 	}
 	ctx.GetLogger().Debugf("lookup source %s is configured", sourceType)
-	err = ns.Open(ctx)
+	// TODO lookup table connection status support
+	err = ns.Connect(ctx, func(status string, message string) {
+		// do nothing
+	})
 	if err != nil {
 		return err
 	}
@@ -100,7 +104,9 @@ func DropInstance(name string) error {
 			return fmt.Errorf("lookup table %s is still in use, stop all using rules before dropping it", name)
 		}
 		delete(instances, name)
-		return nil
+		contextLogger := conf.Log
+		ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
+		return i.ls.Close(ctx)
 	} else {
 		return nil
 	}

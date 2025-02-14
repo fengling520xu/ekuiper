@@ -1,4 +1,4 @@
-// Copyright 2022 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,20 +13,21 @@
 // limitations under the License.
 
 //go:build service || !core
-// +build service !core
 
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 
 	"github.com/gorilla/mux"
 
-	"github.com/lf-edge/ekuiper/internal/binder"
-	"github.com/lf-edge/ekuiper/internal/service"
-	"github.com/lf-edge/ekuiper/pkg/errorx"
+	"github.com/lf-edge/ekuiper/v2/internal/binder"
+	"github.com/lf-edge/ekuiper/v2/internal/service"
+	"github.com/lf-edge/ekuiper/v2/pkg/errorx"
+	"github.com/lf-edge/ekuiper/v2/pkg/validate"
 )
 
 var serviceManager *service.Manager
@@ -53,6 +54,10 @@ func (s serviceComp) rest(r *mux.Router) {
 	r.HandleFunc("/services/{name}", serviceHandler).Methods(http.MethodDelete, http.MethodGet, http.MethodPut)
 }
 
+func (s serviceComp) exporter() ConfManager {
+	return serviceExporter{}
+}
+
 func servicesHandler(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	switch r.Method {
@@ -69,6 +74,10 @@ func servicesHandler(w http.ResponseWriter, r *http.Request) {
 		// Problems decoding
 		if err != nil {
 			handleError(w, err, "Invalid body: Error decoding the %s service request payload", logger)
+			return
+		}
+		if err := validate.ValidatePath(sd.File); err != nil {
+			handleError(w, err, "", logger)
 			return
 		}
 		err = serviceManager.Create(sd)
@@ -140,22 +149,24 @@ func serviceFunctionHandler(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(j, w, logger)
 }
 
-func serviceReset() {
-	serviceManager.UninstallAllServices()
+type serviceExporter struct{}
+
+func (e serviceExporter) Import(ctx context.Context, services map[string]string) map[string]string {
+	return serviceManager.ImportServices(ctx, services)
 }
 
-func serviceExport() map[string]string {
+func (e serviceExporter) PartialImport(ctx context.Context, services map[string]string) map[string]string {
+	return serviceManager.ImportPartialServices(ctx, services)
+}
+
+func (e serviceExporter) Export() map[string]string {
 	return serviceManager.GetAllServices()
 }
 
-func serviceStatusExport() map[string]string {
+func (e serviceExporter) Status() map[string]string {
 	return serviceManager.GetAllServicesStatus()
 }
 
-func serviceImport(services map[string]string) map[string]string {
-	return serviceManager.ImportServices(services)
-}
-
-func servicePartialImport(services map[string]string) map[string]string {
-	return serviceManager.ImportPartialServices(services)
+func (e serviceExporter) Reset() {
+	serviceManager.UninstallAllServices()
 }

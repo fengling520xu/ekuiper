@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,20 +20,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lf-edge/ekuiper/contract/v2/api"
 	"go.nanomsg.org/mangos/v3"
 	"go.nanomsg.org/mangos/v3/protocol/pull"
 	"go.nanomsg.org/mangos/v3/protocol/push"
 	"go.nanomsg.org/mangos/v3/protocol/req"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/testx"
-	"github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/internal/topo/state"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/testx"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/state"
 )
 
 func init() {
-	testx.InitEnv()
+	testx.InitEnv("portable_runtime")
 }
 
 var okMsg = []byte("ok")
@@ -262,7 +262,6 @@ func (r *mockControlClient) Run() error {
 			return fmt.Errorf("can't send reply: %s", err.Error())
 		}
 	}
-	return nil
 }
 
 func (r *mockControlClient) Close() error {

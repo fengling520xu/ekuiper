@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,41 +16,93 @@ package memory
 
 import (
 	gocontext "context"
-	"reflect"
 	"testing"
 	"time"
 
-	"github.com/benbjohnson/clock"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+	"github.com/stretchr/testify/assert"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/io/memory/pubsub"
-	"github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/io/memory/pubsub"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	mockContext "github.com/lf-edge/ekuiper/v2/pkg/mock/context"
 )
+
+func produceUpdatable(ctx api.StreamContext, topic string, data pubsub.MemTuple, rowkind string, keyval any) {
+	pubsub.Produce(ctx, topic, &pubsub.UpdatableTuple{
+		MemTuple: data,
+		Rowkind:  rowkind,
+		Keyval:   keyval,
+	})
+}
+
+func TestLookupProvision(t *testing.T) {
+	ctx := mockContext.NewMockContext("test", "Test")
+	tests := []struct {
+		name  string
+		props map[string]any
+		err   string
+	}{
+		{
+			name: "invalid prop type",
+			props: map[string]any{
+				"key": 1,
+			},
+			err: "read properties map[key:1] fail with error: 1 error(s) decoding:\n\n* 'key' expected type 'string', got unconvertible type 'int', value: '1'",
+		},
+		{
+			name: "missing topic",
+			props: map[string]any{
+				"key": "test",
+			},
+			err: "datasource(topic) is required",
+		},
+		{
+			name: "wrong topic regex",
+			props: map[string]any{
+				"key":        "test",
+				"datasource": "test/#/abc",
+			},
+			err: "invalid topic test/#/abc: # must at the last level",
+		},
+		{
+			name: "missing key",
+			props: map[string]any{
+				"datasource": "test/#",
+			},
+			err: "key is required for lookup source",
+		},
+	}
+	ls := &lookupsource{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ls.Provision(ctx, tt.props)
+			assert.Error(t, err)
+			assert.EqualError(t, err, tt.err)
+		})
+	}
+}
 
 func TestUpdateLookup(t *testing.T) {
 	contextLogger := conf.Log.WithField("rule", "test")
 	ctx := context.WithValue(context.Background(), context.LoggerKey, contextLogger)
-	ls := GetLookupSource()
-	err := ls.Configure("test", map[string]interface{}{"key": "ff"})
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	err = ls.Open(ctx)
-	if err != nil {
-		t.Error(err)
-		return
-	}
+	ls := GetLookupSource().(api.LookupSource)
+	err := ls.Provision(ctx, map[string]interface{}{"datasource": "test", "key": "ff"})
+	assert.NoError(t, err)
+	err = ls.Connect(ctx, func(status string, message string) {
+		// do nothing
+	})
+	assert.NoError(t, err)
 	// wait for the source to be ready
 	time.Sleep(100 * time.Millisecond)
-	pubsub.Produce(ctx, "test", map[string]interface{}{"ff": "value1", "gg": "value2"})
-	pubsub.ProduceUpdatable(ctx, "test", map[string]interface{}{"ff": "value1", "gg": "value2"}, "delete", "value1")
-	pubsub.ProduceUpdatable(ctx, "test", map[string]interface{}{"ff": "value2", "gg": "value2"}, "insert", "value2")
-	pubsub.Produce(ctx, "test", map[string]interface{}{"ff": "value1", "gg": "value4"})
-	pubsub.ProduceUpdatable(ctx, "test", map[string]interface{}{"ff": "value2", "gg": "value2"}, "delete", "value2")
-	pubsub.Produce(ctx, "test", map[string]interface{}{"ff": "value1", "gg": "value2"})
-	pubsub.Produce(ctx, "test", map[string]interface{}{"ff": "value2", "gg": "value2"})
+	pubsub.Produce(ctx, "test", &xsql.Tuple{Message: map[string]any{"ff": "value1", "gg": "value2"}})
+	produceUpdatable(ctx, "test", &xsql.Tuple{Message: map[string]any{"ff": "value1", "gg": "value2"}}, "delete", "value1")
+	produceUpdatable(ctx, "test", &xsql.Tuple{Message: map[string]any{"ff": "value2", "gg": "value2"}}, "insert", "value2")
+	pubsub.Produce(ctx, "test", &xsql.Tuple{Message: map[string]any{"ff": "value1", "gg": "value4"}})
+	produceUpdatable(ctx, "test", &xsql.Tuple{Message: map[string]any{"ff": "value2", "gg": "value2"}}, "delete", "value2")
+	pubsub.Produce(ctx, "test", &xsql.Tuple{Message: map[string]any{"ff": "value1", "gg": "value2"}})
+	pubsub.Produce(ctx, "test", &xsql.Tuple{Message: map[string]any{"ff": "value2", "gg": "value2"}})
 	// wait for table accumulation
 	time.Sleep(100 * time.Millisecond)
 	canctx, cancel := gocontext.WithCancel(gocontext.Background())
@@ -61,22 +113,16 @@ func TestUpdateLookup(t *testing.T) {
 			case <-canctx.Done():
 				return
 			case <-time.After(10 * time.Millisecond):
-				pubsub.Produce(ctx, "test", map[string]interface{}{"ff": "value4", "gg": "value2"})
+				pubsub.Produce(ctx, "test", &xsql.Tuple{Message: map[string]any{"ff": "value4", "gg": "value2"}})
 			}
 		}
 	}()
-	mc := conf.Clock.(*clock.Mock)
-	expected := []api.SourceTuple{
-		api.NewDefaultSourceTupleWithTime(map[string]interface{}{"ff": "value1", "gg": "value2"}, map[string]interface{}{"topic": "test"}, mc.Now()),
+	expected := []map[string]any{
+		{"ff": "value1", "gg": "value2"},
 	}
 	result, err := ls.Lookup(ctx, []string{}, []string{"ff"}, []interface{}{"value1"})
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	if !reflect.DeepEqual(result, expected) {
-		t.Errorf("expect %v but got %v", expected, result)
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, expected, result)
 	err = ls.Close(ctx)
 	if err != nil {
 		t.Error(err)
@@ -87,22 +133,18 @@ func TestUpdateLookup(t *testing.T) {
 func TestLookup(t *testing.T) {
 	contextLogger := conf.Log.WithField("rule", "test2")
 	ctx := context.WithValue(context.Background(), context.LoggerKey, contextLogger)
-	ls := GetLookupSource()
-	err := ls.Configure("test2", map[string]interface{}{"key": "gg"})
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	err = ls.Open(ctx)
-	if err != nil {
-		t.Error(err)
-		return
-	}
+	ls := GetLookupSource().(api.LookupSource)
+	err := ls.Provision(ctx, map[string]any{"datasource": "test2", "key": "gg"})
+	assert.NoError(t, err)
+	err = ls.Connect(ctx, func(status string, message string) {
+		// do nothing
+	})
+	assert.NoError(t, err)
 	// wait for the source to be ready
 	time.Sleep(100 * time.Millisecond)
-	pubsub.Produce(ctx, "test2", map[string]interface{}{"ff": "value1", "gg": "value2"})
-	pubsub.Produce(ctx, "test2", map[string]interface{}{"ff": "value2", "gg": "value3"})
-	pubsub.Produce(ctx, "test2", map[string]interface{}{"ff": "value1", "gg": "value4"})
+	pubsub.Produce(ctx, "test2", &xsql.Tuple{Message: map[string]any{"ff": "value1", "gg": "value2"}})
+	pubsub.Produce(ctx, "test2", &xsql.Tuple{Message: map[string]any{"ff": "value2", "gg": "value3"}})
+	pubsub.Produce(ctx, "test2", &xsql.Tuple{Message: map[string]any{"ff": "value1", "gg": "value4"}})
 	// wait for table accumulation
 	time.Sleep(100 * time.Millisecond)
 	canctx, cancel := gocontext.WithCancel(gocontext.Background())
@@ -113,29 +155,23 @@ func TestLookup(t *testing.T) {
 			case <-canctx.Done():
 				return
 			case <-time.After(10 * time.Millisecond):
-				pubsub.Produce(ctx, "test", map[string]interface{}{"ff": "value4", "gg": "value5"})
+				pubsub.Produce(ctx, "test", &xsql.Tuple{Message: map[string]any{"ff": "value4", "gg": "value5"}})
 			}
 		}
 	}()
-	mc := conf.Clock.(*clock.Mock)
-	expected := []api.SourceTuple{
-		api.NewDefaultSourceTupleWithTime(map[string]interface{}{"ff": "value1", "gg": "value2"}, map[string]interface{}{"topic": "test2"}, mc.Now()),
-		api.NewDefaultSourceTupleWithTime(map[string]interface{}{"ff": "value1", "gg": "value4"}, map[string]interface{}{"topic": "test2"}, mc.Now()),
+	result, _ := ls.Lookup(ctx, []string{}, []string{"ff"}, []any{"value1"})
+	expected := []map[string]any{
+		{"ff": "value1", "gg": "value2"},
+		{"ff": "value1", "gg": "value4"},
 	}
-	result, _ := ls.Lookup(ctx, []string{}, []string{"ff"}, []interface{}{"value1"})
 	if len(result) != 2 {
 		t.Errorf("expect %v but got %v", expected, result)
 	} else {
-		if result[0].Message()["gg"] != "value2" {
+		if result[0]["gg"] != "value2" {
 			result[0], result[1] = result[1], result[0]
 		}
 	}
-	if !reflect.DeepEqual(result, expected) {
-		t.Errorf("expect %v but got %v", expected, result)
-	}
+	assert.Equal(t, expected, result)
 	err = ls.Close(ctx)
-	if err != nil {
-		t.Error(err)
-		return
-	}
+	assert.NoError(t, err)
 }

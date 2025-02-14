@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,46 +15,55 @@
 package node
 
 import (
+	"errors"
 	"fmt"
+	"time"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/topo/lookup"
-	"github.com/lf-edge/ekuiper/internal/topo/lookup/cache"
-	nodeConf "github.com/lf-edge/ekuiper/internal/topo/node/conf"
-	"github.com/lf-edge/ekuiper/internal/topo/node/metric"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/cast"
-	"github.com/lf-edge/ekuiper/pkg/infra"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/converter"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/lookup"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/lookup/cache"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/infra"
+	"github.com/lf-edge/ekuiper/v2/pkg/message"
+	"github.com/lf-edge/ekuiper/v2/pkg/timex"
 )
 
 type LookupConf struct {
-	Cache           bool `json:"cache"`
-	CacheTTL        int  `json:"cacheTtl"`
-	CacheMissingKey bool `json:"cacheMissingKey"`
+	Cache           bool              `json:"cache"`
+	CacheTTL        cast.DurationConf `json:"cacheTtl"`
+	CacheMissingKey bool              `json:"cacheMissingKey"`
+}
+
+type srcConf struct {
+	PayloadField     string `json:"payloadField"`
+	PayloadFormat    string `json:"payloadFormat"`
+	PayloadSchemaId  string `json:"payloadSchemaId"`
+	PayloadDelimiter string `json:"payloadDelimiter"`
 }
 
 // LookupNode will look up the data from the external source when receiving an event
 type LookupNode struct {
 	*defaultSinkNode
-	statManager metric.StatManager
-	sourceType  string
-	joinType    ast.JoinType
-	vals        []ast.Expr
 
-	srcOptions *ast.Options
-	conf       *LookupConf
-	fields     []string
-	keys       []string
+	conf *LookupConf
+	c    *srcConf
+
+	joinType ast.JoinType
+	vals     []ast.Expr
+	fields   []string
+	keys     []string
+	// If lookupByteSource, the decoders are needed
+	isBytesLookup  bool
+	formatDecoder  message.Converter
+	payloadDecoder message.Converter
 }
 
-func NewLookupNode(name string, fields []string, keys []string, joinType ast.JoinType, vals []ast.Expr, srcOptions *ast.Options, options *api.RuleOption) (*LookupNode, error) {
-	t := srcOptions.TYPE
-	if t == "" {
-		return nil, fmt.Errorf("source type is not specified")
-	}
-	props := nodeConf.GetSourceConf(t, srcOptions)
+func NewLookupNode(ctx api.StreamContext, name string, isBytesLookup bool, fields []string, keys []string, joinType ast.JoinType, vals []ast.Expr, srcOptions *ast.Options, options *def.RuleOption, props map[string]any) (*LookupNode, error) {
 	lookupConf := &LookupConf{}
 	if lc, ok := props["lookup"].(map[string]interface{}); ok {
 		err := cast.MapToStruct(lc, lookupConf)
@@ -63,42 +72,62 @@ func NewLookupNode(name string, fields []string, keys []string, joinType ast.Joi
 		}
 	}
 	n := &LookupNode{
-		fields:     fields,
-		keys:       keys,
-		srcOptions: srcOptions,
-		conf:       lookupConf,
-		sourceType: t,
-		joinType:   joinType,
-		vals:       vals,
+		fields:        fields,
+		keys:          keys,
+		conf:          lookupConf,
+		joinType:      joinType,
+		vals:          vals,
+		isBytesLookup: isBytesLookup,
 	}
-	n.defaultSinkNode = &defaultSinkNode{
-		input: make(chan interface{}, options.BufferLength),
-		defaultNode: &defaultNode{
-			outputs:   make(map[string]chan<- interface{}),
-			name:      name,
-			sendError: options.SendError,
-		},
+	n.defaultSinkNode = newDefaultSinkNode(name, options)
+	if isBytesLookup {
+		sc := &srcConf{}
+		e := cast.MapToStruct(props, sc)
+		if e != nil {
+			return nil, e
+		}
+		if (sc.PayloadFormat == "" && sc.PayloadField != "") || (sc.PayloadFormat != "" && sc.PayloadField == "") {
+			return nil, fmt.Errorf("payloadFormat and payloadField must set together")
+		}
+		var sch map[string]*ast.JsonStreamField
+		if len(fields) > 0 {
+			sch = make(map[string]*ast.JsonStreamField, len(fields))
+			for _, field := range fields {
+				sch[field] = nil
+			}
+			if sc.PayloadField != "" {
+				sch[sc.PayloadField] = nil
+			}
+		}
+
+		decoder, err := converter.GetOrCreateConverter(ctx, srcOptions.FORMAT, srcOptions.SCHEMAID, sch, props)
+		if err != nil {
+			msg := fmt.Sprintf("cannot get converter from format %s, schemaId %s: %v", srcOptions.FORMAT, srcOptions.SCHEMAID, err)
+			return nil, errors.New(msg)
+		}
+		n.formatDecoder = decoder
+
+		if sc.PayloadField != "" {
+			props["delimiter"] = sc.PayloadDelimiter
+			payloadDecoder, err := converter.GetOrCreateConverter(ctx, sc.PayloadFormat, sc.PayloadSchemaId, sch, props)
+			if err != nil {
+				return nil, fmt.Errorf("cannot get payload converter from payloadFormat %s, schemaId %s: %v", sc.PayloadFormat, sc.PayloadSchemaId, err)
+			}
+			n.payloadDecoder = payloadDecoder
+		}
+
+		n.c = sc
 	}
 	return n, nil
 }
 
 func (n *LookupNode) Exec(ctx api.StreamContext, errCh chan<- error) {
-	n.ctx = ctx
 	log := ctx.GetLogger()
-	log.Debugf("LookupNode %s is started", n.name)
-
-	if len(n.outputs) <= 0 {
-		infra.DrainError(ctx, fmt.Errorf("no output channel found"), errCh)
-		return
-	}
-	stats, err := metric.NewStatManager(ctx, "op")
-	if err != nil {
-		infra.DrainError(ctx, fmt.Errorf("no output channel found"), errCh)
-		return
-	}
-	n.statManager = stats
-	n.statManagers = []metric.StatManager{stats}
+	n.prepareExec(ctx, errCh, "op")
 	go func() {
+		defer func() {
+			n.Close()
+		}()
 		err := infra.SafeRun(func() error {
 			ns, err := lookup.Attach(n.name)
 			if err != nil {
@@ -108,7 +137,7 @@ func (n *LookupNode) Exec(ctx api.StreamContext, errCh chan<- error) {
 			fv, _ := xsql.NewFunctionValuersForOp(ctx)
 			var c *cache.Cache
 			if n.conf.Cache {
-				c = cache.NewCache(n.conf.CacheTTL, n.conf.CacheMissingKey)
+				c = cache.NewCache(time.Duration(n.conf.CacheTTL), n.conf.CacheMissingKey)
 				defer c.Close()
 			}
 			// Start the lookup source loop
@@ -116,43 +145,30 @@ func (n *LookupNode) Exec(ctx api.StreamContext, errCh chan<- error) {
 				log.Debugf("LookupNode %s is looping", n.name)
 				select {
 				// process incoming item from both streams(transformed) and tables
-				case item, opened := <-n.input:
-					processed := false
-					if item, processed = n.preprocess(item); processed {
+				case item := <-n.input:
+					data, processed := n.commonIngest(ctx, item)
+					if processed {
 						break
 					}
-					n.statManager.IncTotalRecordsIn()
-					n.statManager.ProcessTimeStart()
-					if !opened {
-						n.statManager.IncTotalExceptions("input channel closed")
-						break
-					}
-					switch d := item.(type) {
-					case error:
-						_ = n.Broadcast(d)
-						n.statManager.IncTotalExceptions(d.Error())
-					case *xsql.WatermarkTuple:
-						_ = n.Broadcast(d)
-					case xsql.TupleRow:
+					n.onProcessStart(ctx, data)
+					switch d := data.(type) {
+					case xsql.Row:
 						log.Debugf("Lookup Node receive tuple input %s", d)
-						n.statManager.ProcessTimeStart()
 						sets := &xsql.JoinTuples{Content: make([]*xsql.JoinTuple, 0)}
 						err := n.lookup(ctx, d, fv, ns, sets, c)
 						if err != nil {
-							_ = n.Broadcast(err)
-							n.statManager.IncTotalExceptions(err.Error())
+							n.onError(ctx, err)
+						} else if sets.Len() > 0 {
+							n.Broadcast(sets)
+							n.onSend(ctx, sets)
 						} else {
-							_ = n.Broadcast(sets)
-							n.statManager.IncTotalRecordsOut()
+							ctx.GetLogger().Debugf("lookup return nil")
 						}
-						n.statManager.ProcessTimeEnd()
-						n.statManager.SetBufferLength(int64(len(n.input)))
 					case *xsql.WindowTuples:
-						log.Debugf("Lookup Node receive window input %s", d)
-						n.statManager.ProcessTimeStart()
+						log.Debugf("Lookup Node receive window input %v", d)
 						sets := &xsql.JoinTuples{Content: make([]*xsql.JoinTuple, 0), WindowRange: item.(*xsql.WindowTuples).GetWindowRange()}
 						err := d.Range(func(i int, r xsql.ReadonlyRow) (bool, error) {
-							tr, ok := r.(xsql.TupleRow)
+							tr, ok := r.(xsql.Row)
 							if !ok {
 								return false, fmt.Errorf("Invalid window element, must be a tuple row but got %v", r)
 							}
@@ -163,21 +179,20 @@ func (n *LookupNode) Exec(ctx api.StreamContext, errCh chan<- error) {
 							return true, nil
 						})
 						if err != nil {
-							_ = n.Broadcast(err)
-							n.statManager.IncTotalExceptions(err.Error())
-						} else {
-							_ = n.Broadcast(sets)
+							n.onError(ctx, err)
+						} else if sets.Len() > 0 {
+							n.Broadcast(sets)
 							n.statManager.IncTotalRecordsOut()
+						} else {
+							ctx.GetLogger().Debugf("lookup return nil")
 						}
-						n.statManager.ProcessTimeEnd()
-						n.statManager.SetBufferLength(int64(len(n.input)))
 					default:
-						e := fmt.Errorf("run lookup node error: invalid input type but got %[1]T(%[1]v)", d)
-						_ = n.Broadcast(e)
-						n.statManager.IncTotalExceptions(e.Error())
+						n.onError(ctx, fmt.Errorf("run lookup node error: invalid input type but got %[1]T(%[1]v)", d))
 					}
+					n.onProcessEnd(ctx)
+					n.statManager.SetBufferLength(int64(len(n.input)))
 				case <-ctx.Done():
-					log.Infoln("Cancelling lookup node....")
+					log.Info("Cancelling lookup node....")
 					return nil
 				}
 			}
@@ -189,7 +204,7 @@ func (n *LookupNode) Exec(ctx api.StreamContext, errCh chan<- error) {
 }
 
 // lookup will lookup the cache firstly, if expires, read the external source
-func (n *LookupNode) lookup(ctx api.StreamContext, d xsql.TupleRow, fv *xsql.FunctionValuer, ns api.LookupSource, tuples *xsql.JoinTuples, c *cache.Cache) error {
+func (n *LookupNode) lookup(ctx api.StreamContext, d xsql.Row, fv *xsql.FunctionValuer, ns api.Source, tuples *xsql.JoinTuples, c *cache.Cache) error {
 	ve := &xsql.ValuerEval{Valuer: xsql.MultiValuer(d, fv)}
 	cvs := make([]interface{}, len(n.vals))
 	hasNil := false
@@ -200,7 +215,7 @@ func (n *LookupNode) lookup(ctx api.StreamContext, d xsql.TupleRow, fv *xsql.Fun
 		}
 	}
 	var (
-		r  []api.SourceTuple
+		r  []map[string]any
 		e  error
 		ok bool
 	)
@@ -209,14 +224,14 @@ func (n *LookupNode) lookup(ctx api.StreamContext, d xsql.TupleRow, fv *xsql.Fun
 			k := fmt.Sprintf("%v", cvs)
 			r, ok = c.Get(k)
 			if !ok {
-				r, e = ns.Lookup(ctx, n.fields, n.keys, cvs)
+				r, e = n.doLookup(ctx, ns, cvs)
 				if e != nil {
 					return e
 				}
 				c.Set(k, r)
 			}
 		} else {
-			r, e = ns.Lookup(ctx, n.fields, n.keys, cvs)
+			r, e = n.doLookup(ctx, ns, cvs)
 		}
 	}
 	if e != nil {
@@ -232,50 +247,93 @@ func (n *LookupNode) lookup(ctx api.StreamContext, d xsql.TupleRow, fv *xsql.Fun
 				return nil
 			}
 		}
-		for _, v := range r {
-			merged := &xsql.JoinTuple{}
-			merged.AddTuple(d)
-			t := &xsql.Tuple{
-				Emitter:   n.name,
-				Message:   v.Message(),
-				Metadata:  v.Meta(),
-				Timestamp: conf.GetNowInMilli(),
+		if r != nil {
+			for _, mm := range r {
+				merged := &xsql.JoinTuple{}
+				merged.AddTuple(d)
+				t := &xsql.Tuple{
+					Emitter:   n.name,
+					Message:   mm,
+					Timestamp: timex.GetNow(),
+				}
+				merged.AddTuple(t)
+				tuples.Content = append(tuples.Content, merged)
 			}
-			merged.AddTuple(t)
-			tuples.Content = append(tuples.Content, merged)
 		}
 		return nil
 	}
 }
 
-func (n *LookupNode) merge(ctx api.StreamContext, d xsql.TupleRow, r []map[string]interface{}) {
-	n.statManager.ProcessTimeStart()
-	sets := &xsql.JoinTuples{Content: make([]*xsql.JoinTuple, 0)}
+func (n *LookupNode) doLookup(ctx api.StreamContext, ns api.Source, cvs []any) ([]map[string]any, error) {
+	if n.isBytesLookup {
+		rawRows, err := ns.(api.LookupBytesSource).Lookup(ctx, n.fields, n.keys, cvs)
+		if err != nil {
+			return nil, err
+		}
+		result := make([]map[string]any, 0, len(rawRows))
+		for _, row := range rawRows {
+			r, e := n.decode(ctx, row)
+			if e != nil {
+				ctx.GetLogger().Errorf("decode row %v error: %v", row, e)
+			} else {
+				switch rt := r.(type) {
+				case []map[string]any:
+					result = append(result, rt...)
+				case map[string]any:
+					result = append(result, rt)
+				default:
+					ctx.GetLogger().Errorf("decode row %v got unknow result: %v", row, rt)
+				}
+			}
+		}
+		return result, nil
+	} else {
+		return ns.(api.LookupSource).Lookup(ctx, n.fields, n.keys, cvs)
+	}
+}
 
-	if len(r) == 0 {
-		if n.joinType == ast.LEFT_JOIN {
-			merged := &xsql.JoinTuple{}
-			merged.AddTuple(d)
-			sets.Content = append(sets.Content, merged)
-		} else {
-			ctx.GetLogger().Debugf("Lookup Node %s no result found for tuple %s", n.name, d)
-			return
+// Only called when isBytesLookup is true
+// Must guarantee decoders are set
+func (n *LookupNode) decode(ctx api.StreamContext, row []byte) (any, error) {
+	r, e := n.formatDecoder.Decode(ctx, row)
+	if e == nil && n.payloadDecoder != nil {
+		switch rt := r.(type) {
+		case map[string]any:
+			return decodePayload(ctx, n.payloadDecoder, rt, n.c.PayloadField)
+		case []map[string]any:
+			result := make([]map[string]any, 0, len(rt))
+			for _, mm := range rt {
+				rr, e := decodePayload(ctx, n.payloadDecoder, mm, n.c.PayloadField)
+				if e != nil {
+					ctx.GetLogger().Warnf("decode payload of %v got error %v", mm, e)
+				} else {
+					switch rrt := rr.(type) {
+					case map[string]any:
+						result = append(result, rrt)
+					case []map[string]any:
+						result = append(result, rrt...)
+					default:
+						return nil, fmt.Errorf("payload decoder return non map or map slice")
+					}
+				}
+			}
+			return result, nil
+		default:
+			return nil, fmt.Errorf("decoder return non map or map slice")
 		}
 	}
-	for _, v := range r {
-		merged := &xsql.JoinTuple{}
-		merged.AddTuple(d)
-		t := &xsql.Tuple{
-			Emitter:   n.name,
-			Message:   v,
-			Timestamp: conf.GetNowInMilli(),
-		}
-		merged.AddTuple(t)
-		sets.Content = append(sets.Content, merged)
-	}
+	return r, e
+}
 
-	_ = n.Broadcast(sets)
-	n.statManager.ProcessTimeEnd()
-	n.statManager.IncTotalRecordsOut()
-	n.statManager.SetBufferLength(int64(len(n.input)))
+func decodePayload(ctx api.StreamContext, decoder message.Converter, rt map[string]any, field string) (any, error) {
+	payload, ok := rt[field]
+	if !ok {
+		ctx.GetLogger().Warnf("cannot find payload field %s", field)
+		return nil, nil
+	}
+	raw, err := cast.ToByteA(payload, cast.CONVERT_SAMEKIND)
+	if err != nil {
+		return nil, fmt.Errorf("payload is not bytes: %v", err)
+	}
+	return decoder.Decode(ctx, raw)
 }

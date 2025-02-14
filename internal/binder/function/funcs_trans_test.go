@@ -1,4 +1,4 @@
-// Copyright 2023 EMQ Technologies Co., Ltd.
+// Copyright 2023-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,10 +19,10 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	kctx "github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/internal/topo/state"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	kctx "github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/state"
 )
 
 func TestCompressExec(t *testing.T) {
@@ -33,7 +33,7 @@ func TestCompressExec(t *testing.T) {
 	f := ff()
 	contextLogger := conf.Log.WithField("rule", "testCompressExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 2)
 	tests := []struct {
 		args   []interface{}
@@ -72,7 +72,7 @@ func TestCompressExec(t *testing.T) {
 		},
 	}
 	for i, tt := range tests {
-		result, _ := f.Exec(tt.args, fctx)
+		result, _ := f.Exec(fctx, tt.args)
 		if !reflect.DeepEqual(result, tt.result) {
 			t.Errorf("%d result mismatch,\ngot:\t%v \nwant:\t%v", i, result, tt.result)
 		}
@@ -87,7 +87,7 @@ func TestDecompressExec(t *testing.T) {
 	f := ff()
 	contextLogger := conf.Log.WithField("rule", "testDecompressExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 2)
 	tests := []struct {
 		args   []interface{}
@@ -126,7 +126,7 @@ func TestDecompressExec(t *testing.T) {
 		},
 	}
 	for i, tt := range tests {
-		result, _ := f.Exec(tt.args, fctx)
+		result, _ := f.Exec(fctx, tt.args)
 		if !reflect.DeepEqual(result, tt.result) {
 			t.Errorf("%d result mismatch,\ngot:\t%v \nwant:\t%v", i, result, tt.result)
 		}

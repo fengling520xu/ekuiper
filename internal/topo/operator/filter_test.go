@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,10 +21,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
 func TestFilterPlan_Apply(t *testing.T) {
@@ -52,12 +54,7 @@ func TestFilterPlan_Apply(t *testing.T) {
 					"a": int64(6),
 				},
 			},
-			result: &xsql.Tuple{
-				Emitter: "tbl",
-				Message: xsql.Message{
-					"a": int64(6),
-				},
-			},
+			result: nil,
 		},
 		{
 			sql: "SELECT * FROM tbl WHERE abc > def and abc <= ghi",
@@ -331,7 +328,7 @@ func TestFilterPlan_Apply(t *testing.T) {
 		{
 			sql: "SELECT abc FROM src1 WHERE f1 = \"v1\" GROUP BY TUMBLINGWINDOW(ss, 10)",
 			data: &xsql.WindowTuples{
-				Content: []xsql.TupleRow{
+				Content: []xsql.Row{
 					&xsql.Tuple{
 						Emitter: "src1",
 						Message: xsql.Message{"id1": 1, "f1": "v1"},
@@ -346,7 +343,7 @@ func TestFilterPlan_Apply(t *testing.T) {
 				WindowRange: xsql.NewWindowRange(1541152486013, 1541152487013),
 			},
 			result: &xsql.WindowTuples{
-				Content: []xsql.TupleRow{
+				Content: []xsql.Row{
 					&xsql.Tuple{
 						Emitter: "src1",
 						Message: xsql.Message{"id1": 1, "f1": "v1"},
@@ -361,7 +358,7 @@ func TestFilterPlan_Apply(t *testing.T) {
 		{
 			sql: "SELECT abc FROM src1 WHERE f1 = \"v8\" GROUP BY TUMBLINGWINDOW(ss, 10)",
 			data: &xsql.WindowTuples{
-				Content: []xsql.TupleRow{
+				Content: []xsql.Row{
 					&xsql.Tuple{
 						Emitter: "src1",
 						Message: xsql.Message{"id1": 1, "f1": "v1"},
@@ -381,19 +378,19 @@ func TestFilterPlan_Apply(t *testing.T) {
 			data: &xsql.JoinTuples{
 				Content: []*xsql.JoinTuple{
 					{
-						Tuples: []xsql.TupleRow{
+						Tuples: []xsql.Row{
 							&xsql.Tuple{Emitter: "src1", Message: xsql.Message{"id1": 1, "f1": "v1"}},
 							&xsql.Tuple{Emitter: "src2", Message: xsql.Message{"id2": 2, "f2": "w2"}},
 						},
 					},
 					{
-						Tuples: []xsql.TupleRow{
+						Tuples: []xsql.Row{
 							&xsql.Tuple{Emitter: "src1", Message: xsql.Message{"id1": 2, "f1": "v2"}},
 							&xsql.Tuple{Emitter: "src2", Message: xsql.Message{"id2": 4, "f2": "w3"}},
 						},
 					},
 					{
-						Tuples: []xsql.TupleRow{
+						Tuples: []xsql.Row{
 							&xsql.Tuple{Emitter: "src1", Message: xsql.Message{"id1": 3, "f1": "v1"}},
 						},
 					},
@@ -403,13 +400,13 @@ func TestFilterPlan_Apply(t *testing.T) {
 			result: &xsql.JoinTuples{
 				Content: []*xsql.JoinTuple{
 					{
-						Tuples: []xsql.TupleRow{
+						Tuples: []xsql.Row{
 							&xsql.Tuple{Emitter: "src1", Message: xsql.Message{"id1": 1, "f1": "v1"}},
 							&xsql.Tuple{Emitter: "src2", Message: xsql.Message{"id2": 2, "f2": "w2"}},
 						},
 					},
 					{
-						Tuples: []xsql.TupleRow{
+						Tuples: []xsql.Row{
 							&xsql.Tuple{Emitter: "src1", Message: xsql.Message{"id1": 3, "f1": "v1"}},
 						},
 					},
@@ -422,19 +419,19 @@ func TestFilterPlan_Apply(t *testing.T) {
 			data: &xsql.JoinTuples{
 				Content: []*xsql.JoinTuple{
 					{
-						Tuples: []xsql.TupleRow{
+						Tuples: []xsql.Row{
 							&xsql.Tuple{Emitter: "src1", Message: xsql.Message{"id1": 1, "f1": "v1"}},
 							&xsql.Tuple{Emitter: "src2", Message: xsql.Message{"id2": 2, "f2": "w2"}},
 						},
 					},
 					{
-						Tuples: []xsql.TupleRow{
+						Tuples: []xsql.Row{
 							&xsql.Tuple{Emitter: "src1", Message: xsql.Message{"id1": 2, "f1": "v2"}},
 							&xsql.Tuple{Emitter: "src2", Message: xsql.Message{"id2": 4, "f2": "w3"}},
 						},
 					},
 					{
-						Tuples: []xsql.TupleRow{
+						Tuples: []xsql.Row{
 							&xsql.Tuple{Emitter: "src1", Message: xsql.Message{"id1": 3, "f1": "v1"}},
 						},
 					},
@@ -444,13 +441,13 @@ func TestFilterPlan_Apply(t *testing.T) {
 			result: &xsql.JoinTuples{
 				Content: []*xsql.JoinTuple{
 					{
-						Tuples: []xsql.TupleRow{
+						Tuples: []xsql.Row{
 							&xsql.Tuple{Emitter: "src1", Message: xsql.Message{"id1": 1, "f1": "v1"}},
 							&xsql.Tuple{Emitter: "src2", Message: xsql.Message{"id2": 2, "f2": "w2"}},
 						},
 					},
 					{
-						Tuples: []xsql.TupleRow{
+						Tuples: []xsql.Row{
 							&xsql.Tuple{Emitter: "src1", Message: xsql.Message{"id1": 3, "f1": "v1"}},
 						},
 					},
@@ -463,19 +460,19 @@ func TestFilterPlan_Apply(t *testing.T) {
 			data: &xsql.JoinTuples{
 				Content: []*xsql.JoinTuple{
 					{
-						Tuples: []xsql.TupleRow{
+						Tuples: []xsql.Row{
 							&xsql.Tuple{Emitter: "src1", Message: xsql.Message{"id1": 1, "f1": "v1"}},
 							&xsql.Tuple{Emitter: "src2", Message: xsql.Message{"id2": 2, "f2": "w2"}},
 						},
 					},
 					{
-						Tuples: []xsql.TupleRow{
+						Tuples: []xsql.Row{
 							&xsql.Tuple{Emitter: "src1", Message: xsql.Message{"id1": 2, "f1": "v2"}},
 							&xsql.Tuple{Emitter: "src2", Message: xsql.Message{"id2": 4, "f2": "w3"}},
 						},
 					},
 					{
-						Tuples: []xsql.TupleRow{
+						Tuples: []xsql.Row{
 							&xsql.Tuple{Emitter: "src1", Message: xsql.Message{"id1": 3, "f1": "v1"}},
 						},
 					},
@@ -606,17 +603,17 @@ func TestFilterPlan_Apply(t *testing.T) {
 	contextLogger := conf.Log.WithField("rule", "TestFilerPlan_Apply")
 	ctx := context.WithValue(context.Background(), context.LoggerKey, contextLogger)
 	for i, tt := range tests {
-		stmt, err := xsql.NewParser(strings.NewReader(tt.sql)).Parse()
-		if err != nil {
-			t.Errorf("statement %d parse error %s", i, err)
-			break
-		}
-		fv, afv := xsql.NewFunctionValuersForOp(ctx)
-		pp := &FilterOp{Condition: stmt.Condition}
-		result := pp.Apply(ctx, tt.data, fv, afv)
-		if !reflect.DeepEqual(tt.result, result) {
-			t.Errorf("%d. %q\n\nresult mismatch:\n\nexp=%#v\n\ngot=%#v\n\n", i, tt.sql, tt.result, result)
-		}
+		t.Run(tt.sql, func(t *testing.T) {
+			stmt, err := xsql.NewParser(strings.NewReader(tt.sql)).Parse()
+			if err != nil {
+				t.Errorf("statement %d parse error %s", i, err)
+				return
+			}
+			fv, afv := xsql.NewFunctionValuersForOp(ctx)
+			pp := &FilterOp{Condition: stmt.Condition}
+			result := pp.Apply(ctx, tt.data, fv, afv)
+			assert.Equal(t, tt.result, result)
+		})
 	}
 }
 
@@ -645,7 +642,7 @@ func TestFilterPlanError(t *testing.T) {
 		{
 			sql: "SELECT abc FROM src1 WHERE f1 = \"v1\" GROUP BY TUMBLINGWINDOW(ss, 10)",
 			data: &xsql.WindowTuples{
-				Content: []xsql.TupleRow{
+				Content: []xsql.Row{
 					&xsql.Tuple{
 						Emitter: "src1",
 						Message: xsql.Message{"id1": 1, "f1": "v1"},
@@ -668,7 +665,7 @@ func TestFilterPlanError(t *testing.T) {
 				},
 			},
 			result: &xsql.WindowTuples{
-				Content: []xsql.TupleRow{
+				Content: []xsql.Row{
 					&xsql.Tuple{
 						Emitter: "src1",
 						Message: xsql.Message{"id1": 1, "f1": "v1"},
@@ -688,7 +685,7 @@ func TestFilterPlanError(t *testing.T) {
 		{
 			sql: "SELECT abc FROM src1 WHERE f1 = \"v8\" GROUP BY TUMBLINGWINDOW(ss, 10)",
 			data: &xsql.WindowTuples{
-				Content: []xsql.TupleRow{
+				Content: []xsql.Row{
 					&xsql.Tuple{
 						Emitter: "src1",
 						Message: xsql.Message{"id1": 1, "f1": "v1"},
@@ -708,19 +705,19 @@ func TestFilterPlanError(t *testing.T) {
 			data: &xsql.JoinTuples{
 				Content: []*xsql.JoinTuple{
 					{
-						Tuples: []xsql.TupleRow{
+						Tuples: []xsql.Row{
 							&xsql.Tuple{Emitter: "src1", Message: xsql.Message{"id1": 1, "f1": 50}},
 							&xsql.Tuple{Emitter: "src2", Message: xsql.Message{"id2": 2, "f2": "w2"}},
 						},
 					},
 					{
-						Tuples: []xsql.TupleRow{
+						Tuples: []xsql.Row{
 							&xsql.Tuple{Emitter: "src1", Message: xsql.Message{"id1": 2, "f1": "v2"}},
 							&xsql.Tuple{Emitter: "src2", Message: xsql.Message{"id2": 4, "f2": "w3"}},
 						},
 					},
 					{
-						Tuples: []xsql.TupleRow{
+						Tuples: []xsql.Row{
 							&xsql.Tuple{Emitter: "src1", Message: xsql.Message{"id1": 3, "f1": "v1"}},
 						},
 					},

@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,23 +18,25 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/keyedstate"
-	"github.com/lf-edge/ekuiper/internal/testx"
-	kctx "github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/internal/topo/state"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/keyedstate"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/testx"
+	kctx "github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/state"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/timex"
 )
 
 func init() {
-	testx.InitEnv()
+	testx.InitEnv("function")
 }
 
 func TestCoalesceExec(t *testing.T) {
@@ -44,7 +46,7 @@ func TestCoalesceExec(t *testing.T) {
 	}
 	contextLogger := conf.Log.WithField("rule", "testExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 2)
 	tests := []struct {
 		args   []interface{}
@@ -106,7 +108,7 @@ func TestToSeconds(t *testing.T) {
 	}
 	contextLogger := conf.Log.WithField("rule", "testExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 2)
 	tests := []struct {
 		args   []interface{}
@@ -137,7 +139,7 @@ func TestToJson(t *testing.T) {
 	}
 	contextLogger := conf.Log.WithField("rule", "testExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 2)
 	tests := []struct {
 		args   []interface{}
@@ -178,7 +180,7 @@ func TestFromJson(t *testing.T) {
 	}
 	contextLogger := conf.Log.WithField("rule", "testExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 2)
 	tests := []struct {
 		args   []interface{}
@@ -234,7 +236,7 @@ func TestConvertTZ(t *testing.T) {
 	}
 	contextLogger := conf.Log.WithField("rule", "testExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 2)
 
 	loc, _ := time.LoadLocation("Asia/Shanghai")
@@ -324,7 +326,7 @@ func TestDelay(t *testing.T) {
 	}
 	contextLogger := conf.Log.WithField("rule", "testExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 2)
 
 	err := f.val(fctx, []ast.Expr{&ast.StringLiteral{Val: "abc"}})
@@ -419,7 +421,7 @@ func TestKeyedStateExec(t *testing.T) {
 	}
 	contextLogger := conf.Log.WithField("rule", "testExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 1)
 	tests := []struct {
 		args   []interface{}
@@ -460,7 +462,7 @@ func TestKeyedStateExec(t *testing.T) {
 func TestHexIntFunctions(t *testing.T) {
 	contextLogger := conf.Log.WithField("rule", "testExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 2)
 	tests := []struct {
 		name   string
@@ -497,7 +499,7 @@ func TestHexIntFunctions(t *testing.T) {
 func TestMiscFuncNil(t *testing.T) {
 	contextLogger := conf.Log.WithField("rule", "testExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 2)
 	oldBuiltins := builtins
 	defer func() {
@@ -508,7 +510,7 @@ func TestMiscFuncNil(t *testing.T) {
 	for name, function := range builtins {
 		switch name {
 		case "compress", "decompress", "newuuid", "tstamp", "rule_id", "rule_start", "window_start", "window_end", "event_time",
-			"json_path_query", "json_path_query_first", "coalesce", "meta", "json_path_exists":
+			"json_path_query", "json_path_query_first", "coalesce", "meta", "json_path_exists", "bypass":
 			continue
 		case "isnull":
 			v, b := function.exec(fctx, []interface{}{nil})
@@ -544,7 +546,7 @@ func TestCast(t *testing.T) {
 	}
 	contextLogger := conf.Log.WithField("rule", "testExec")
 	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
-	tempStore, _ := state.CreateStore("mockRule0", api.AtMostOnce)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
 	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 2)
 
 	tests := []struct {
@@ -647,4 +649,24 @@ func TestCast(t *testing.T) {
 			assert.NoError(t, err)
 		}
 	}
+}
+
+func TestProps(t *testing.T) {
+	f, ok := builtins["props"]
+	if !ok {
+		t.Fatal("builtin not found")
+	}
+	contextLogger := conf.Log.WithField("rule", "testExec")
+	ctx := kctx.WithValue(kctx.Background(), kctx.LoggerKey, contextLogger)
+	tempStore, _ := state.CreateStore("mockRule0", def.AtMostOnce)
+	fctx := kctx.NewDefaultFuncContext(ctx.WithMeta("mockRule0", "test", tempStore), 2)
+	e, ok := f.exec(fctx, []any{12})
+	require.False(t, ok)
+	err, ok := e.(error)
+	require.True(t, ok)
+	require.EqualError(t, err, "invalid input 12: must be property name of string type")
+	tt := timex.GetNowInMilli()
+	et, ok := f.exec(fctx, []any{"et"})
+	require.True(t, ok)
+	require.Equal(t, strconv.FormatInt(tt, 10), et)
 }

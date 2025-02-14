@@ -1,4 +1,4 @@
-// Copyright 2022 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,10 +17,12 @@ package infra
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"runtime/debug"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
 )
 
 // SafeRun will catch and return the panic error together with other errors
@@ -31,6 +33,7 @@ import (
 func SafeRun(fn func() error) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
+			conf.Log.Errorf("panic stack:%s", string(debug.Stack()))
 			debug.PrintStack()
 			switch x := r.(type) {
 			case string:
@@ -49,12 +52,15 @@ func SafeRun(fn func() error) (err error) {
 // DrainError a non-block function to send out the error to the error channel
 // Only the first error will be sent out and received then the rule will be terminated
 // Thus the latter error will just skip
-// It is usually the error outlet of a op/rule.
+// It is usually the error outlet of an op/rule.
 func DrainError(ctx api.StreamContext, err error, errCh chan<- error) {
-	if ctx != nil {
-		ctx.GetLogger().Errorf("runtime error: %v", err)
-	} else {
-		conf.Log.Errorf("runtime error: %v", err)
+	if err != nil {
+		_, file, line, _ := runtime.Caller(1) // 1 means the caller of DrainError
+		if ctx != nil {
+			ctx.GetLogger().Errorf("runtime error from %s/l%d: %v", file, line, err)
+		} else {
+			conf.Log.Errorf("runtime error %s/l%d: %v", file, line, err)
+		}
 	}
 	select {
 	case errCh <- err:

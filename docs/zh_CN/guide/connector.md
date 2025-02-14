@@ -36,6 +36,7 @@ eKuiper 内置以下数据源连接器：
 - [视频源](./sources/plugin/video.md)：用于查询视频流。
 - [Random 源](./sources/plugin/random.md)：用于生成随机数据的源，用于测试。
 - [Zero MQ 源](./sources/plugin/zmq.md)：从 Zero MQ 读取数据。
+- [Kafka 源](./sources/plugin/kafka.md): 从 Kafka 读取数据
 
 ## 数据 Sink 连接器
 
@@ -63,7 +64,6 @@ eKuiper Sink 连接器负责将 eKuiper 处理后的数据发送到各种目标�
 
 - [InfluxDB Sink](./sinks/plugin/influx.md)：输出到 Influx DB `v1.x`。
 - [InfluxDBV2 Sink](./sinks/plugin/influx2.md)：输出到 Influx DB `v2.x`。
-- [TDengine Sink](./sinks/plugin/tdengine.md)：输出到 Tdengine。
 - [Image Sink](./sinks/plugin/image.md)：输出到一个图像文件。仅用于处理二进制结果。
 - [Zero MQ Sink](./sinks/plugin/zmq.md)：输出到 ZeroMQ。
 - [Kafka Sink](./sinks/plugin/kafka.md)：输出到 Kafka。
@@ -71,72 +71,6 @@ eKuiper Sink 连接器负责将 eKuiper 处理后的数据发送到各种目标�
 ### 数据模板
 
 eKuiper [数据模板](./sinks/data_template.md) 支持用户对分析结果进行"二次处理"，以满足不同接收系统的多样化格式要求。利用 Golang 模板系统，eKuiper 提供了动态数据转换、条件输出和迭代处理的机制，确保了与各种接收器的兼容性和精确格式化。
-
-## 连接器的重用
-
-eKuiper 支持通过 `connectionSelector` 配置项对连接器进行重用，用户只需一次定义即可在多个配置中重用，提升连接管理效率，简化配置流程。
-
-**配置**
-
-以 MQTT 数据源为例，您可首先在连接配置文件 `connections/connection.yaml` 中定义 MQTT 全局连接信息，例如  `mqtt.localConnection` 和 `mqtt.cloudConnection`。
-
-```yaml
-mqtt:
-  localConnection: #connection key
-    server: "tcp://127.0.0.1:1883"
-    username: ekuiper
-    password: password
-    #certificationPath: /var/kuiper/xyz-certificate.pem
-    #privateKeyPath: /var/kuiper/xyz-private.pem.ke
-    #insecureSkipVerify: false
-    #protocolVersion: 3
-    clientid: ekuiper
-  cloudConnection: #connection key
-    server: "tcp://broker.emqx.io:1883"
-    username: user1
-    password: password
-    #certificationPath: /var/kuiper/xyz-certificate.pem
-    #privateKeyPath: /var/kuiper/xyz-private.pem.ke
-    #insecureSkipVerify: false
-    #protocolVersion: 3
-```
-
-在配置 MQTT 源（`$ekuiper/etc/mqtt_source.yaml`）时，可通过 `connectionSelector` 引用以上连接配置，例如`demo_conf` 和 `demo2_conf` 都将引用 `mqtt.localConnection` 的连接配置。
-
-```yaml
-#Override the global configurations
-demo_conf: #Conf_key
-  qos: 0
-  connectionSelector: mqtt.localConnection
-  servers: [tcp://10.211.55.6:1883, tcp://127.0.0.1]
-
-#Override the global configurations
-demo2_conf: #Conf_key
-  qos: 0
-  connentionSelector: mqtt.localConnection
-  servers: [tcp://10.211.55.6:1883, tcp://127.0.0.1]
-```
-
-基于 `demo_conf` 和 `demo2_conf` 分别创建两个数据流 `demo` 和 `demo2`：
-
-```text
-demo (
-    ...
-  ) WITH (DATASOURCE="test/", FORMAT="JSON", CONF_KEY="demo_conf");
-
-demo2 (
-    ...
-  ) WITH (DATASOURCE="test2/", FORMAT="JSON", CONF_KEY="demo2_conf");
-
-```
-
-当相应的规则分别引用以上数据流时，规则之间的源部分将共享连接。在这里 `DATASOURCE` 对应 mqtt 订阅的 topic，配置项中的 `qos` 将用作订阅时的 `Qos`。在以上示例配置中，`demo` 以 Qos 0 订阅 topic `test/`，`demo2` 以 Qos 0 订阅 topic `test2/` 。
-
-::: tip
-
-对于MQTT源，如果两个流具有相同的 `DATASOURCE` 但 `qos` 值不同，则只有先启动的规则才会触发订阅。
-
-:::
 
 ## 批量配置
 

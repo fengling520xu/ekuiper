@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,16 +14,10 @@
 
 package errorx
 
-type ErrorCode int
-
-const (
-	GENERAL_ERR ErrorCode = iota
-	NOT_FOUND
+import (
+	"net/url"
+	"strings"
 )
-
-const IOErr = "io error"
-
-var NotFoundErr = NewWithCode(NOT_FOUND, "not found")
 
 type Error struct {
 	msg  string
@@ -45,3 +39,29 @@ func (e *Error) Error() string {
 func (e *Error) Code() ErrorCode {
 	return e.code
 }
+
+type ErrorWithCode interface {
+	Error() string
+	Code() ErrorCode
+}
+
+func IsRecoverAbleError(err error) bool {
+	if strings.Contains(err.Error(), "connection reset by peer") || strings.Contains(err.Error(), "No connection could be made") {
+		return true
+	}
+	if urlErr, ok := err.(*url.Error); ok {
+		// consider timeout and temporary error as recoverable
+		if urlErr.Timeout() || urlErr.Temporary() {
+			return true
+		}
+	}
+	return false
+}
+
+type MockTemporaryError struct{}
+
+func (e *MockTemporaryError) Error() string {
+	return "mockTimeoutError"
+}
+
+func (e *MockTemporaryError) Temporary() bool { return true }

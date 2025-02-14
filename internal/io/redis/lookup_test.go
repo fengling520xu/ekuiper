@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,25 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build redisdb || !core
-
 package redis
 
 import (
-	"reflect"
+	"fmt"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/benbjohnson/clock"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
-	econf "github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/pkg/api"
-)
-
-var (
-	addr string
-	mr   *miniredis.Miniredis
+	"github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	mockContext "github.com/lf-edge/ekuiper/v2/pkg/mock/context"
 )
 
 func init() {
@@ -52,105 +46,106 @@ func init() {
 
 // TestSingle test lookup value of a single map
 func TestSingle(t *testing.T) {
-	contextLogger := econf.Log.WithField("rule", "test")
-	ctx := context.WithValue(context.Background(), context.LoggerKey, contextLogger)
+	ctx := mockContext.NewMockContext("test", "tt")
 	ls := GetLookupSource()
-	err := ls.Configure("0", map[string]interface{}{"addr": addr, "datatype": "string"})
+	err := ls.Provision(ctx, map[string]any{"addr": addr, "datatype": "string", "datasource": "0"})
 	if err != nil {
 		t.Error(err)
 		return
 	}
-	err = ls.Open(ctx)
+	err = ls.Connect(ctx, func(status string, message string) {
+		// do nothing
+	})
 	if err != nil {
 		t.Error(err)
 		return
 	}
-	mc := econf.Clock.(*clock.Mock)
 	tests := []struct {
 		value  int
-		result []api.SourceTuple
+		result []map[string]any
 	}{
 		{
 			value: 1,
-			result: []api.SourceTuple{
-				api.NewDefaultSourceTupleWithTime(map[string]interface{}{"id": float64(1), "name": "John", "address": float64(34), "mobile": "334433"}, nil, mc.Now()),
+			result: []map[string]any{
+				{"id": float64(1), "name": "John", "address": float64(34), "mobile": "334433"},
 			},
 		}, {
 			value: 2,
-			result: []api.SourceTuple{
-				api.NewDefaultSourceTupleWithTime(map[string]interface{}{"id": float64(2), "name": "Susan", "address": float64(22), "mobile": "666433"}, nil, mc.Now()),
+			result: []map[string]any{
+				{"id": float64(2), "name": "Susan", "address": float64(22), "mobile": "666433"},
 			},
 		}, {
 			value:  3,
-			result: []api.SourceTuple{},
+			result: []map[string]any{},
 		},
 	}
 	for i, tt := range tests {
-		actual, err := ls.Lookup(ctx, []string{}, []string{"id"}, []interface{}{tt.value})
-		if err != nil {
-			t.Errorf("Test %d: %v", i, err)
-			continue
-		}
-		if !deepEqual(actual, tt.result) {
-			t.Errorf("Test %d: expected %v, actual %v", i, tt.result, actual)
-			continue
-		}
+		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
+			actual, err := ls.(api.LookupSource).Lookup(ctx, []string{}, []string{"id"}, []any{tt.value})
+			assert.NoError(t, err)
+			assert.Equal(t, tt.result, actual)
+		})
 	}
 }
 
 func TestList(t *testing.T) {
-	contextLogger := econf.Log.WithField("rule", "test")
-	ctx := context.WithValue(context.Background(), context.LoggerKey, contextLogger)
+	ctx := mockContext.NewMockContext("test", "tt")
 	ls := GetLookupSource()
-	err := ls.Configure("0", map[string]interface{}{"addr": addr, "datatype": "list"})
+	err := ls.Provision(ctx, map[string]any{"addr": addr, "datatype": "list", "datasource": "0"})
 	if err != nil {
 		t.Error(err)
 		return
 	}
-	err = ls.Open(ctx)
+	err = ls.Connect(ctx, func(status string, message string) {
+		// do nothing
+	})
 	if err != nil {
 		t.Error(err)
 		return
 	}
-	mc := econf.Clock.(*clock.Mock)
 	tests := []struct {
 		value  string
-		result []api.SourceTuple
+		result []map[string]any
 	}{
 		{
 			value: "group1",
-			result: []api.SourceTuple{
-				api.NewDefaultSourceTupleWithTime(map[string]interface{}{"id": float64(2), "name": "Susan"}, nil, mc.Now()),
-				api.NewDefaultSourceTupleWithTime(map[string]interface{}{"id": float64(1), "name": "John"}, nil, mc.Now()),
+			result: []map[string]any{
+				{"id": float64(2), "name": "Susan"},
+				{"id": float64(1), "name": "John"},
 			},
 		}, {
 			value: "group2",
-			result: []api.SourceTuple{
-				api.NewDefaultSourceTupleWithTime(map[string]interface{}{"id": float64(3), "name": "Nancy"}, nil, mc.Now()),
+			result: []map[string]any{
+				{"id": float64(3), "name": "Nancy"},
 			},
 		}, {
 			value:  "group4",
-			result: []api.SourceTuple{},
+			result: []map[string]any{},
 		},
 	}
 	for i, tt := range tests {
-		actual, err := ls.Lookup(ctx, []string{}, []string{"id"}, []interface{}{tt.value})
-		if err != nil {
-			t.Errorf("Test %d: %v", i, err)
-			continue
-		}
-		if !deepEqual(actual, tt.result) {
-			t.Errorf("Test %d: expected %v, actual %v", i, tt.result, actual)
-			continue
-		}
+		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
+			actual, err := ls.(api.LookupSource).Lookup(ctx, []string{}, []string{"id"}, []any{tt.value})
+			assert.NoError(t, err)
+			assert.Equal(t, tt.result, actual)
+		})
 	}
 }
 
-func deepEqual(a []api.SourceTuple, b []api.SourceTuple) bool {
-	for i, val := range a {
-		if !reflect.DeepEqual(val.Message(), b[i].Message()) || !reflect.DeepEqual(val.Meta(), b[i].Meta()) {
-			return false
-		}
+func TestLookupSourceDB(t *testing.T) {
+	ctx := mockContext.NewMockContext("test", "tt")
+	s := &lookupSource{}
+	err := s.Provision(ctx, map[string]any{"addr": addr, "datatype": "string", "datasource": "199"})
+	require.Error(t, err)
+	require.Equal(t, "redis lookup source db should be in range 0-15", err.Error())
+}
+
+func TestLookUpPingRedis(t *testing.T) {
+	s := &lookupSource{}
+	prop := map[string]interface{}{
+		"datasource": "1",
+		"addr":       addr,
+		"datatype":   "string",
 	}
-	return true
+	require.NoError(t, s.Ping(context.Background(), prop))
 }

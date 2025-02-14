@@ -1,4 +1,4 @@
-// Copyright 2021-2022 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,19 +17,16 @@ package operator
 import (
 	"fmt"
 
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
 )
 
 type OrderOp struct {
 	SortFields ast.SortFields
 }
 
-/**
- *  input: *xsql.Tuple from preprocessor | xsql.WindowTuples from windowOp | xsql.JoinTuples from joinOp
- *  output: *xsql.Tuple | xsql.WindowTuples | xsql.JoinTuples
- */
 func (p *OrderOp) Apply(ctx api.StreamContext, data interface{}, fv *xsql.FunctionValuer, afv *xsql.AggregateFunctionValuer) interface{} {
 	log := ctx.GetLogger()
 	log.Debugf("order plan receive %v", data)
@@ -37,7 +34,7 @@ func (p *OrderOp) Apply(ctx api.StreamContext, data interface{}, fv *xsql.Functi
 	switch input := data.(type) {
 	case error:
 		return input
-	case xsql.TupleRow:
+	case xsql.Row:
 		return input
 	case xsql.SortingData:
 		if err := sorter.Sort(input); err != nil {

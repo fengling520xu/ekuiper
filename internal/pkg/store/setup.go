@@ -15,7 +15,10 @@
 package store
 
 import (
-	"github.com/lf-edge/ekuiper/internal/pkg/store/definition"
+	"database/sql"
+
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/store/definition"
+	sqldb "github.com/lf-edge/ekuiper/v2/internal/pkg/store/sql"
 )
 
 type StoreConf struct {
@@ -23,6 +26,7 @@ type StoreConf struct {
 	ExtStateType string
 	RedisConfig  definition.RedisConfig
 	SqliteConfig definition.SqliteConfig
+	FdbConfig    definition.FdbConfig
 }
 
 func SetupDefault(dataDir string) error {
@@ -34,6 +38,7 @@ func SetupDefault(dataDir string) error {
 			Path: dataDir,
 			Name: "",
 		},
+		Fdb: definition.FdbConfig{},
 	}
 
 	return Setup(c)
@@ -45,6 +50,7 @@ func SetupWithConfig(sc *StoreConf) error {
 		ExtStateType: sc.ExtStateType,
 		Redis:        sc.RedisConfig,
 		Sqlite:       sc.SqliteConfig,
+		Fdb:          sc.FdbConfig,
 	}
 	return Setup(c)
 }
@@ -65,5 +71,13 @@ func Setup(config definition.Config) error {
 		return err
 	}
 	extStateStores = s
-	return nil
+	db, err := sqldb.BuildSqliteStore(config, "trace.db")
+	if err != nil {
+		return err
+	}
+	TraceStores = db
+	return TraceStores.Apply(func(db *sql.DB) error {
+		_, err := db.Exec(`CREATE TABLE IF NOT EXISTS trace (traceID TEXT PRIMARY KEY, ruleID TEXT NOT NULL, value BLOB,createdtimestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`)
+		return err
+	})
 }

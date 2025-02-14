@@ -13,7 +13,6 @@
 // limitations under the License.
 
 //go:build ui || !core
-// +build ui !core
 
 package server
 
@@ -26,9 +25,10 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/lf-edge/ekuiper/internal/meta"
-	"github.com/lf-edge/ekuiper/internal/topo/node"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/internal/meta"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/node"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/validate"
 )
 
 func init() {
@@ -60,9 +60,11 @@ func (m metaComp) rest(r *mux.Router) {
 	r.HandleFunc("/metadata/connections/yaml/{name}", connectionConfHandler).Methods(http.MethodGet)
 	r.HandleFunc("/metadata/connections/{name}/confKeys/{confKey}", connectionConfKeyHandler).Methods(http.MethodDelete, http.MethodPut)
 
+	r.HandleFunc("/metadata/resource", resourceHandler).Methods(http.MethodGet)
 	r.HandleFunc("/metadata/resources", resourcesHandler).Methods(http.MethodGet)
 	r.HandleFunc("/metadata/sources/connection/{name}", sourceConnectionHandler).Methods(http.MethodPost)
 	r.HandleFunc("/metadata/sinks/connection/{name}", sinkConnectionHandler).Methods(http.MethodPost)
+	r.HandleFunc("/metadata/lookups/connection/{name}", lookupConnectionHandler).Methods(http.MethodPost)
 	for _, endpoint := range metaEndpoints {
 		endpoint(r)
 	}
@@ -168,6 +170,14 @@ func connectionMetaHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func resourceHandler(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	v := r.URL.Query().Get("sourceType")
+	res := meta.GetSourceResourceConf(v)
+	w.WriteHeader(http.StatusOK)
+	jsonResponse(res, w, logger)
+}
+
 // Get source yaml
 func sourceConfHandler(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
@@ -180,6 +190,7 @@ func sourceConfHandler(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err, "", logger)
 		return
 	} else {
+		w.Header().Add(ContentType, ContentTypeJSON)
 		w.Write(ret)
 	}
 }
@@ -196,6 +207,7 @@ func connectionConfHandler(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err, "", logger)
 		return
 	} else {
+		w.Header().Add(ContentType, ContentTypeJSON)
 		_, _ = w.Write(ret)
 	}
 }
@@ -212,6 +224,7 @@ func sinkConfHandler(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err, "", logger)
 		return
 	} else {
+		w.Header().Add(ContentType, ContentTypeJSON)
 		_, _ = w.Write(ret)
 	}
 }
@@ -230,7 +243,7 @@ func sourceConfKeyHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut:
 		v, err1 := io.ReadAll(r.Body)
 		if err1 != nil {
-			handleError(w, err, "Invalid body", logger)
+			handleError(w, err1, "Invalid body", logger)
 			return
 		}
 		err = meta.AddSourceConfKey(pluginName, confKey, language, v)
@@ -255,7 +268,7 @@ func sinkConfKeyHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut:
 		v, err1 := io.ReadAll(r.Body)
 		if err1 != nil {
-			handleError(w, err, "Invalid body", logger)
+			handleError(w, err1, "Invalid body", logger)
 			return
 		}
 		err = meta.AddSinkConfKey(pluginName, confKey, language, v)
@@ -278,12 +291,22 @@ func connectionConfKeyHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		err = meta.DelConnectionConfKey(pluginName, confKey, language)
 	case http.MethodPut:
+		if err := validate.ValidateID(confKey); err != nil {
+			handleError(w, err, "Invalid confKey", logger)
+			return
+		}
 		v, err1 := io.ReadAll(r.Body)
 		if err1 != nil {
 			handleError(w, err1, "Invalid body", logger)
 			return
 		}
-		err = meta.AddConnectionConfKey(pluginName, confKey, language, v)
+		reqField := make(map[string]interface{})
+		err = json.Unmarshal(v, &reqField)
+		if err != nil {
+			handleError(w, err, "Invalid body", logger)
+			return
+		}
+		err = meta.AddConnectionConfKey(pluginName, confKey, language, reqField)
 	}
 	if err != nil {
 		handleError(w, err, "", logger)
@@ -317,7 +340,6 @@ func getLanguage(r *http.Request) string {
 func sinkConnectionHandler(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	vars := mux.Vars(r)
-
 	sinkNm := vars["name"]
 	config := map[string]interface{}{}
 	v, _ := io.ReadAll(r.Body)
@@ -326,13 +348,11 @@ func sinkConnectionHandler(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err, "", logger)
 		return
 	}
-
-	err = node.SinkOpen(sinkNm, config)
+	err = node.SinkPing(sinkNm, config)
 	if err != nil {
 		handleError(w, err, "", logger)
 		return
 	}
-
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -348,8 +368,28 @@ func sourceConnectionHandler(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err, "", logger)
 		return
 	}
+	err = node.SourcePing(sourceNm, config)
+	if err != nil {
+		handleError(w, err, "", logger)
+		return
+	}
 
-	err = node.SourceOpen(sourceNm, config)
+	w.WriteHeader(http.StatusOK)
+}
+
+func lookupConnectionHandler(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	vars := mux.Vars(r)
+
+	sourceNm := vars["name"]
+	config := map[string]interface{}{}
+	v, _ := io.ReadAll(r.Body)
+	err := json.Unmarshal(v, &config)
+	if err != nil {
+		handleError(w, err, "", logger)
+		return
+	}
+	err = node.LookupPing(sourceNm, config)
 	if err != nil {
 		handleError(w, err, "", logger)
 		return

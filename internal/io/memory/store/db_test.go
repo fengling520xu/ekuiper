@@ -18,48 +18,46 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/benbjohnson/clock"
-
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/v2/internal/io/memory/pubsub"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
 )
 
 func TestTable(t *testing.T) {
-	mc := conf.Clock.(*clock.Mock)
 	tb := createTable("topicT", "a")
-	tb.add(api.NewDefaultSourceTupleWithTime(map[string]interface{}{"a": 1, "b": "0"}, nil, mc.Now()))
-	tb.add(api.NewDefaultSourceTupleWithTime(map[string]interface{}{"a": 2, "b": "0"}, nil, mc.Now()))
-	tb.add(api.NewDefaultSourceTupleWithTime(map[string]interface{}{"a": 3, "b": "4"}, nil, mc.Now()))
-	tb.add(api.NewDefaultSourceTupleWithTime(map[string]interface{}{"a": 1, "b": "1"}, nil, mc.Now()))
+	tb.add(&xsql.Tuple{Message: map[string]interface{}{"a": 1, "b": "0"}})
+	tb.add(&xsql.Tuple{Message: map[string]interface{}{"a": 2, "b": "0"}})
+	tb.add(&xsql.Tuple{Message: map[string]interface{}{"a": 3, "b": "4"}})
+	tb.add(&xsql.Tuple{Message: map[string]interface{}{"a": 1, "b": "1"}})
 	v, _ := tb.Read([]string{"a"}, []interface{}{1})
-	exp := []api.SourceTuple{
-		api.NewDefaultSourceTupleWithTime(map[string]interface{}{"a": 1, "b": "1"}, nil, mc.Now()),
+	exp := []pubsub.MemTuple{
+		&xsql.Tuple{Message: map[string]interface{}{"a": 1, "b": "1"}},
 	}
 	if !reflect.DeepEqual(v, exp) {
 		t.Errorf("read a 1 expect %v, but got %v", exp, v)
 		return
 	}
 	v, _ = tb.Read([]string{"b"}, []interface{}{"0"})
-	exp = []api.SourceTuple{
-		api.NewDefaultSourceTupleWithTime(map[string]interface{}{"a": 2, "b": "0"}, nil, mc.Now()),
+	exp = []pubsub.MemTuple{
+		&xsql.Tuple{Message: map[string]interface{}{"a": 2, "b": "0"}},
 	}
 	if !reflect.DeepEqual(v, exp) {
 		t.Errorf("read b 0 expect %v, but got %v", exp, v)
 		return
 	}
-	tb.add(api.NewDefaultSourceTupleWithTime(map[string]interface{}{"a": 5, "b": "0"}, nil, mc.Now()))
+	tb.add(&xsql.Tuple{Message: map[string]interface{}{"a": 5, "b": "0"}})
 	tb.delete(3)
-	tb.add(api.NewDefaultSourceTupleWithTime(map[string]interface{}{"a": 1, "b": "1"}, nil, mc.Now()))
+	tb.add(&xsql.Tuple{Message: map[string]interface{}{"a": 1, "b": "1"}})
 	v, _ = tb.Read([]string{"b"}, []interface{}{"0"})
-	exp = []api.SourceTuple{
-		api.NewDefaultSourceTupleWithTime(map[string]interface{}{"a": 2, "b": "0"}, nil, mc.Now()),
-		api.NewDefaultSourceTupleWithTime(map[string]interface{}{"a": 5, "b": "0"}, nil, mc.Now()),
+	exp = []pubsub.MemTuple{
+		&xsql.Tuple{Message: map[string]interface{}{"a": 2, "b": "0"}},
+		&xsql.Tuple{Message: map[string]interface{}{"a": 5, "b": "0"}},
 	}
 	if len(v) != 2 {
 		t.Errorf("read 1 again expect %v, but got %v", exp, v)
 		return
 	} else {
-		if v[0].Message()["a"] != 2 {
+		vv, _ := v[0].Value("a", "")
+		if vv != 2 {
 			v[0], v[1] = v[1], v[0]
 		}
 		if !reflect.DeepEqual(v, exp) {
@@ -69,8 +67,8 @@ func TestTable(t *testing.T) {
 	}
 
 	v, _ = tb.Read([]string{"a", "b"}, []interface{}{1, "1"})
-	exp = []api.SourceTuple{
-		api.NewDefaultSourceTupleWithTime(map[string]interface{}{"a": 1, "b": "1"}, nil, mc.Now()),
+	exp = []pubsub.MemTuple{
+		&xsql.Tuple{Message: map[string]interface{}{"a": 1, "b": "1"}},
 	}
 	if !reflect.DeepEqual(v, exp) {
 		t.Errorf("read a,b expect %v, but got %v", exp, v)

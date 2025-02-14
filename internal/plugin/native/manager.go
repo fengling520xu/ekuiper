@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,9 @@ package native
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,20 +34,27 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/meta"
-	"github.com/lf-edge/ekuiper/internal/pkg/filex"
-	"github.com/lf-edge/ekuiper/internal/pkg/httpx"
-	"github.com/lf-edge/ekuiper/internal/pkg/store"
-	plugin2 "github.com/lf-edge/ekuiper/internal/plugin"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/cast"
-	"github.com/lf-edge/ekuiper/pkg/errorx"
-	"github.com/lf-edge/ekuiper/pkg/kv"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/binder"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/meta"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/filex"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/httpx"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/store"
+	plugin2 "github.com/lf-edge/ekuiper/v2/internal/plugin"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/errorx"
+	"github.com/lf-edge/ekuiper/v2/pkg/kv"
 )
 
 // Manager Initialized in the binder
-var manager *Manager
+var (
+	manager *Manager
+	_       binder.SourceFactory = manager
+	_       binder.SinkFactory   = manager
+	_       binder.FuncFactory   = manager
+)
 
 const DELETED = "$deleted"
 
@@ -75,9 +84,9 @@ func InitManager() (*Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot find plugins folder: %s", err)
 	}
-	confDir, err := conf.GetConfLoc()
+	etcDir, err := conf.GetConfLoc()
 	if err != nil {
-		return nil, fmt.Errorf("cannot find conf folder: %s", err)
+		return nil, fmt.Errorf("cannot find data folder: %s", err)
 	}
 	func_db, err := store.GetKV("pluginFuncs")
 	if err != nil {
@@ -91,7 +100,7 @@ func InitManager() (*Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error when opening nativePluginStatus: %v", err)
 	}
-	registry := &Manager{symbols: make(map[string]string), funcSymbolsDb: func_db, plgInstallDb: plg_db, plgStatusDb: plg_status_db, pluginDir: pluginDir, pluginConfDir: confDir, runtime: make(map[string]*plugin.Plugin)}
+	registry := &Manager{symbols: make(map[string]string), funcSymbolsDb: func_db, plgInstallDb: plg_db, plgStatusDb: plg_status_db, pluginDir: pluginDir, pluginConfDir: etcDir, runtime: make(map[string]*plugin.Plugin)}
 	manager = registry
 
 	plugins := make([]map[string]string, 3)
@@ -418,7 +427,7 @@ func (rr *Manager) Delete(t plugin2.PluginType, name string, stop bool) error {
 	rr.removePluginInstallScript(name, t)
 
 	if len(results) > 0 {
-		return fmt.Errorf(strings.Join(results, "\n"))
+		return errors.New(strings.Join(results, "\n"))
 	} else {
 		rr.store(t, name, DELETED)
 		if stop {
@@ -495,23 +504,37 @@ func (rr *Manager) install(t plugin2.PluginType, name, src string, shellParas []
 			}
 		}
 	}()
+	yamlFileChecked := false
+	soFileChecked := false
+	zipFiles := make([]string, 0)
 	for _, file := range r.File {
+		zipFiles = append(zipFiles, file.Name)
 		fileName := file.Name
-		if yamlFile == fileName {
-			err = filex.UnzipTo(file, yamlPath)
-			if err != nil {
-				return version, err
+		switch {
+		case yamlFile == fileName:
+			yamlFileChecked = true
+			// skip yaml file if exists
+			if _, err := os.Stat(yamlPath); err != nil && os.IsNotExist(err) {
+				conf.Log.Infof("install %s due to no this file", yamlPath)
+				err = filex.UnzipTo(file, yamlPath)
+				if err != nil {
+					return version, err
+				}
+				revokeFiles = append(revokeFiles, yamlPath)
+				filenames = append(filenames, yamlPath)
+			} else {
+				filenames = append(filenames, yamlPath)
+				conf.Log.Infof("skip install %s due to already exists", yamlPath)
+				continue
 			}
-			revokeFiles = append(revokeFiles, yamlPath)
-			filenames = append(filenames, yamlPath)
-		} else if fileName == name+".json" {
+		case fileName == name+".json":
 			jsonPath := path.Join(rr.pluginConfDir, plugin2.PluginTypes[t], fileName)
 			if err := filex.UnzipTo(file, jsonPath); nil != err {
 				conf.Log.Errorf("Failed to decompress the metadata %s file", fileName)
 			} else {
 				revokeFiles = append(revokeFiles, jsonPath)
 			}
-		} else if soPrefix.Match([]byte(fileName)) {
+		case soPrefix.Match([]byte(fileName)):
 			soPath = path.Join(rr.pluginDir, plugin2.PluginTypes[t], fileName)
 			err = filex.UnzipTo(file, soPath)
 			if err != nil {
@@ -520,12 +543,13 @@ func (rr *Manager) install(t plugin2.PluginType, name, src string, shellParas []
 			filenames = append(filenames, soPath)
 			revokeFiles = append(revokeFiles, soPath)
 			soName, version = parseName(fileName)
-		} else if strings.HasPrefix(fileName, "etc/") {
+			soFileChecked = true
+		case strings.HasPrefix(fileName, "etc/"):
 			err = filex.UnzipTo(file, path.Join(rr.pluginConfDir, plugin2.PluginTypes[t], strings.Replace(fileName, "etc", name, 1)))
 			if err != nil {
 				return version, err
 			}
-		} else { // unzip other files
+		default:
 			err = filex.UnzipTo(file, path.Join(tempPath, fileName))
 			if err != nil {
 				return version, err
@@ -533,7 +557,7 @@ func (rr *Manager) install(t plugin2.PluginType, name, src string, shellParas []
 		}
 	}
 	if len(filenames) != expFiles {
-		err = fmt.Errorf("invalid zip file: so file or conf file is missing")
+		err = fmt.Errorf("invalid zip file: expectFiles: %v, got filenames:%v, zipFiles: %v, yamlFileChecked:%v, soFileChecked:%v", expFiles, filenames, zipFiles, yamlFileChecked, soFileChecked)
 		return version, err
 	} else if haveInstallFile {
 		// run install script if there is
@@ -604,7 +628,7 @@ func (rr *Manager) SourcePluginInfo(name string) (plugin2.EXTENSION_TYPE, string
 	}
 }
 
-func (rr *Manager) LookupSource(name string) (api.LookupSource, error) {
+func (rr *Manager) LookupSource(name string) (api.Source, error) {
 	nf, err := rr.loadRuntime(plugin2.SOURCE, name, "", ucFirst(name)+"Lookup")
 	if err != nil {
 		return nil, err
@@ -613,9 +637,9 @@ func (rr *Manager) LookupSource(name string) (api.LookupSource, error) {
 		return nil, nil
 	}
 	switch t := nf.(type) {
-	case api.LookupSource:
+	case api.Source:
 		return t, nil
-	case func() api.LookupSource:
+	case func() api.Source:
 		return t(), nil
 	default:
 		return nil, fmt.Errorf("exported symbol %s is not type of api.LookupSource or function that return api.LookupSource", t)
@@ -719,7 +743,7 @@ func (rr *Manager) loadRuntime(t plugin2.PluginType, soName, soFilepath, symbolN
 		} else {
 			mod, err := rr.getSoFilePath(t, soName, false)
 			if err != nil {
-				conf.Log.Debugf(fmt.Sprintf("cannot find the native plugin %s in path: %v", soName, err))
+				conf.Log.Debugf("cannot find the native plugin %s in path: %v", soName, err)
 				return nil, nil
 			}
 			soPath = mod
@@ -727,7 +751,7 @@ func (rr *Manager) loadRuntime(t plugin2.PluginType, soName, soFilepath, symbolN
 		conf.Log.Debugf("Opening plugin %s", soPath)
 		plug, err = plugin.Open(soPath)
 		if err != nil {
-			conf.Log.Errorf(fmt.Sprintf("plugin %s open error: %v", soName, err))
+			conf.Log.Errorf("plugin %s open error: %v", soName, err)
 			return nil, fmt.Errorf("cannot open %s: %v", soPath, err)
 		}
 		rr.Lock()
@@ -741,7 +765,7 @@ func (rr *Manager) loadRuntime(t plugin2.PluginType, soName, soFilepath, symbolN
 	conf.Log.Debugf("Loading symbol %s", symbolName)
 	nf, err := plug.Lookup(symbolName)
 	if err != nil {
-		conf.Log.Warnf(fmt.Sprintf("cannot find symbol %s, please check if it is exported: %v", symbolName, err))
+		conf.Log.Warnf("cannot find symbol %s, please check if it is exported: %v", symbolName, err)
 		return nil, nil
 	}
 	conf.Log.Debugf("Successfully look-up plugin %s", symbolName)
@@ -839,30 +863,41 @@ func (rr *Manager) GetAllPluginsStatus() map[string]string {
 const BOOT_INSTALL = "$boot_install"
 
 // PluginImport save the plugin install information and wait for restart
-func (rr *Manager) PluginImport(plugins map[string]string) error {
+func (rr *Manager) PluginImport(ctx context.Context, plugins map[string]string) map[string]string {
+	errMap := map[string]string{}
 	if len(plugins) == 0 {
 		return nil
 	}
 	for k, v := range plugins {
+		select {
+		case <-ctx.Done():
+			return errMap
+		default:
+		}
 		err := rr.plgInstallDb.Set(k, v)
 		if err != nil {
-			return err
+			errMap[k] = err.Error()
 		}
 	}
 	// set the flag to install the plugins when eKuiper reboot
 	err := rr.plgInstallDb.Set(BOOT_INSTALL, BOOT_INSTALL)
 	if err != nil {
-		return err
+		errMap["flag"] = err.Error()
 	}
-	return nil
+	return errMap
 }
 
 // PluginPartialImport compare the plugin to be installed and the one in database
 // if not exist in database, install;
 // if exist, ignore
-func (rr *Manager) PluginPartialImport(plugins map[string]string) map[string]string {
+func (rr *Manager) PluginPartialImport(ctx context.Context, plugins map[string]string) map[string]string {
 	errMap := map[string]string{}
 	for k, v := range plugins {
+		select {
+		case <-ctx.Done():
+			return errMap
+		default:
+		}
 		plugInScript := ""
 		found, _ := rr.plgInstallDb.Get(k, &plugInScript)
 		if !found {

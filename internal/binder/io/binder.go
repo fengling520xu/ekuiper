@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,9 +18,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/lf-edge/ekuiper/internal/binder"
-	"github.com/lf-edge/ekuiper/internal/plugin"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/binder"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin"
+	"github.com/lf-edge/ekuiper/v2/pkg/modules"
 )
 
 var ( // init once and read only
@@ -64,6 +66,9 @@ func Source(name string) (api.Source, error) {
 			errs = errors.Join(errs, fmt.Errorf("%s:%v", sourceFactoriesNames[i], err))
 		}
 		if r != nil {
+			if !modules.IsStreamSource(r) {
+				return nil, fmt.Errorf("got non stream source %s", name)
+			}
 			return r, errs
 		}
 	}
@@ -106,7 +111,7 @@ func GetSinkPlugin(name string) (plugin.EXTENSION_TYPE, string, string) {
 	return plugin.NONE_EXTENSION, "", ""
 }
 
-func LookupSource(name string) (api.LookupSource, error) {
+func LookupSource(name string) (api.Source, error) {
 	var errs error
 	for i, sf := range sourceFactories {
 		r, err := sf.LookupSource(name)
@@ -114,6 +119,9 @@ func LookupSource(name string) (api.LookupSource, error) {
 			errs = errors.Join(errs, fmt.Errorf("%s:%v", sourceFactoriesNames[i], err))
 		}
 		if r != nil {
+			if !modules.IsLookupSource(r) {
+				return nil, fmt.Errorf("got non lookup source %s", name)
+			}
 			return r, errs
 		}
 	}

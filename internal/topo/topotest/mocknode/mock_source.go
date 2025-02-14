@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,25 +19,43 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/topo/topotest/mockclock"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/timex"
 )
 
 type MockSource struct {
 	data   []*xsql.Tuple
 	offset int
-	sync.Mutex
+	eof    api.EOFIngest
+	sync.RWMutex
 }
 
 const TIMELEAP = 200
 
-func (m *MockSource) Open(ctx api.StreamContext, consumer chan<- api.SourceTuple, _ chan<- error) {
+func (m *MockSource) Provision(ctx api.StreamContext, configs map[string]any) error {
+	datasource, ok := configs["datasource"]
+	if !ok {
+		return fmt.Errorf("datasource is required")
+	}
+	m.data = TestData[datasource.(string)]
+	return nil
+}
+
+func (m *MockSource) SetEofIngest(eof api.EOFIngest) {
+	m.eof = eof
+}
+
+func (m *MockSource) Connect(_ api.StreamContext, _ api.StatusChangeHandler) error {
+	return nil
+}
+
+func (m *MockSource) Subscribe(ctx api.StreamContext, ingest api.TupleIngest, ingestError api.ErrorIngest) error {
 	log := ctx.GetLogger()
-	mockClock := mockclock.GetMockClock()
-	log.Infof("%d: mock source %s starts", conf.GetNowInMilli(), ctx.GetOpId())
+	mockClock := timex.Clock
+	log.Infof("%d: mock source %s starts", timex.GetNowInMilli(), ctx.GetOpId())
 	log.Debugf("mock source %s starts with offset %d", ctx.GetOpId(), m.offset)
 	for i, d := range m.data {
 		if i < m.offset {
@@ -45,32 +63,34 @@ func (m *MockSource) Open(ctx api.StreamContext, consumer chan<- api.SourceTuple
 			continue
 		}
 		log.Debugf("mock source is waiting %d", i)
-		diff := d.Timestamp - conf.GetNowInMilli()
+		diff := d.Timestamp.Sub(timex.GetNow())
 		if diff <= 0 {
-			log.Warnf("Time stamp invalid, current time is %d, but timestamp is %d", conf.GetNowInMilli(), d.Timestamp)
-			diff = TIMELEAP
+			log.Warnf("Time stamp invalid, current time is %d, but timestamp is %d", timex.GetNowInMilli(), d.Timestamp.UnixMilli())
+			diff = TIMELEAP * time.Millisecond
 		}
-		next := mockClock.After(time.Duration(diff) * time.Millisecond)
+		next := mockClock.After(diff)
 		// Mock timer, only send out the data once the mock time goes to the timestamp.
 		// Another mechanism must be imposed to move forward the mock time.
 		select {
 		case <-next:
 			m.Lock()
 			m.offset = i + 1
-			consumer <- api.NewDefaultSourceTupleWithTime(d.Message, xsql.Metadata{"topic": "mock"}, mockClock.Now())
-			log.Debugf("%d: mock source %s is sending data %d:%s", cast.TimeToUnixMilli(mockClock.Now()), ctx.GetOpId(), i, d)
 			m.Unlock()
+			ingest(ctx, map[string]any(d.Message), map[string]any{"topic": "mock"}, timex.GetNow())
+			log.Debugf("%d: mock source %s is sending data %d:%v", timex.GetNowInMilli(), ctx.GetOpId(), i, d)
 		case <-ctx.Done():
 			log.Debugf("mock source open DONE")
-			return
+			return nil
 		}
 	}
 	log.Debugf("mock source sends out all data")
+	m.eof(ctx)
+	return nil
 }
 
 func (m *MockSource) GetOffset() (interface{}, error) {
-	m.Lock()
-	defer m.Unlock()
+	m.RLock()
+	defer m.RUnlock()
 	return m.offset, nil
 }
 
@@ -84,12 +104,16 @@ func (m *MockSource) Rewind(offset interface{}) error {
 	return nil
 }
 
+func (m *MockSource) ResetOffset(input map[string]interface{}) error {
+	return nil
+}
+
 func (m *MockSource) Close(_ api.StreamContext) error {
 	m.offset = 0
 	return nil
 }
 
-func (m *MockSource) Configure(dataKey string, _ map[string]interface{}) error {
-	m.data = TestData[dataKey]
-	return nil
-}
+var (
+	_ api.TupleSource = &MockSource{}
+	_ api.Bounded     = &MockSource{}
+)

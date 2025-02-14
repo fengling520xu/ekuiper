@@ -1,4 +1,4 @@
-// Copyright 2023 EMQ Technologies Co., Ltd.
+// Copyright 2023-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,8 +17,9 @@ package function
 import (
 	"fmt"
 
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
 )
 
 type funcExecutor struct{}
@@ -39,14 +40,18 @@ func (f *funcExecutor) ValidateWithName(args []ast.Expr, name string) error {
 		}
 	}
 	// TODO pass in ctx
-	return fs.val(nil, eargs)
+	err := fs.val(nil, eargs)
+	if err != nil {
+		return fmt.Errorf("validate function %s error: %v", name, err)
+	}
+	return nil
 }
 
 func (f *funcExecutor) Validate(_ []interface{}) error {
 	return fmt.Errorf("unknow name")
 }
 
-func (f *funcExecutor) Exec(_ []interface{}, _ api.FunctionContext) (interface{}, bool) {
+func (f *funcExecutor) Exec(ctx api.FunctionContext, args []any) (interface{}, bool) {
 	return fmt.Errorf("unknow name"), false
 }
 

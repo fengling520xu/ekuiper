@@ -20,9 +20,9 @@ import (
 	"fmt"
 
 	"github.com/dop251/goja"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
 
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
 )
 
 type ScriptOp struct {

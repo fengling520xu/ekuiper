@@ -19,9 +19,9 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/io/memory/pubsub"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/io/memory/pubsub"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
 )
 
 // Reg registers a topic to save it to memory store
@@ -44,25 +44,36 @@ func runTable(topic string, topicRegex *regexp.Regexp, t *Table) {
 	t.cancel = cancel
 	for {
 		select {
-		case v, opened := <-ch:
-			if !opened { // exit go routine is not sync with drop table
-				return
-			}
+		case v := <-ch:
 			switch vv := v.(type) {
-			case *pubsub.UpdatableTuple:
-				switch vv.Rowkind {
-				case ast.RowkindInsert, ast.RowkindUpdate, ast.RowkindUpsert:
-					t.add(vv.DefaultSourceTuple)
-				case ast.RowkindDelete:
-					t.delete(vv.Keyval)
+			case pubsub.MemTuple:
+				ingestMemTuple(t, vv)
+			case []pubsub.MemTuple:
+				for _, vvv := range vv {
+					ingestMemTuple(t, vvv)
 				}
 			default:
-				t.add(v)
+				// should never happen
+				conf.Log.Errorf("add wrong data %v for table %s", v, topic)
 			}
 			conf.Log.Debugf("receive data %v for %s", v, topic)
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+func ingestMemTuple(t *Table, tuple pubsub.MemTuple) {
+	switch tt := tuple.(type) {
+	case *pubsub.UpdatableTuple:
+		switch tt.Rowkind {
+		case ast.RowkindInsert, ast.RowkindUpdate, ast.RowkindUpsert:
+			t.add(tt.MemTuple)
+		case ast.RowkindDelete:
+			t.delete(tt.Keyval)
+		}
+	default:
+		t.add(tt)
 	}
 }
 

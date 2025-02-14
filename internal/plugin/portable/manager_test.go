@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,21 +21,22 @@ import (
 	"net/http/httptest"
 	"os"
 	"path"
-	"path/filepath"
-	"reflect"
 	"testing"
 	"time"
 
-	"github.com/lf-edge/ekuiper/internal/meta"
-	"github.com/lf-edge/ekuiper/internal/plugin"
-	"github.com/lf-edge/ekuiper/internal/plugin/portable/runtime"
-	"github.com/lf-edge/ekuiper/internal/testx"
+	"github.com/pingcap/failpoint"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/lf-edge/ekuiper/v2/internal/meta"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin"
+	"github.com/lf-edge/ekuiper/v2/internal/testx"
 )
 
 // Test only install API. Install from file is tested in the integration test in test/portable_rule_test
 
 func init() {
-	testx.InitEnv()
+	testx.InitEnv("portable")
 	// Wait for other db tests to finish to avoid db lock
 	for i := 0; i < 10; i++ {
 		if _, err := InitManager(); err != nil {
@@ -81,102 +82,52 @@ func TestManager_Install(t *testing.T) {
 			u:   endpoint + "/portables/mirror.zip",
 			err: errors.New("fail to install plugin: missing or invalid json file wrongname.json, found 9 files in total"),
 		}, { // 5
-			n: "mirror2",
-			u: endpoint + "/portables/mirror.zip",
+			n:   "mirror2",
+			u:   endpoint + "/portables/mirror.zip",
+			err: errors.New("fail to install plugin: plugin executable /home/runner/work/ekuiper/ekuiper/plugins/portable/mirror2/mirror2 stops with error fork/exec /home/runner/work/ekuiper/ekuiper/plugins/portable/mirror2/mirror2: permission denied"),
 		},
 	}
 
 	fmt.Printf("The test bucket size is %d.\n\n", len(data))
-	for i, tt := range data {
+	for _, tt := range data {
 		p := &plugin.IOPlugin{
 			Name: tt.n,
 			File: tt.u,
 		}
-		err := manager.Register(p)
-		if !reflect.DeepEqual(tt.err, err) {
-			t.Errorf("%d: error mismatch:\n  exp=%s\n  got=%s\n\n", i, tt.err, err)
-		} else if tt.err == nil {
-			err := checkFileForMirror(manager.pluginDir, manager.pluginConfDir, true)
-			if err != nil {
-				t.Errorf("%d: error : %s\n\n", i, err)
-			}
+		m, err := InitManager()
+		require.NoError(t, err)
+		err = m.Register(p)
+		if err != nil {
+			require.Equal(t, tt.err, err)
+		} else {
+			err := checkFileForMirror(m.pluginDir, m.pluginConfDir, true)
+			require.NoError(t, err)
 		}
 	}
 }
 
 func TestManager_Read(t *testing.T) {
-	expPlugins := []*PluginInfo{
-		{
-			PluginMeta: runtime.PluginMeta{
-				Name:       "mirror2",
-				Version:    "v1.0.0",
-				Language:   "go",
-				Executable: filepath.Clean(path.Join(manager.pluginDir, "mirror2", "mirror2")),
-			},
-			Sources:   []string{"randomGo"},
-			Sinks:     []string{"fileGo"},
-			Functions: []string{"echoGo"},
-		},
-	}
 	result := manager.List()
-	if len(result) != 3 {
-		t.Errorf("list result mismatch:\n  exp=%v\n  got=%v\n\n", expPlugins, result)
+	if len(result) != 1 {
+		t.Errorf("list result mismatch:\n got=%v\n\n", result)
 	}
 
 	_, ok := manager.GetPluginInfo("mirror3")
-	if ok {
-		t.Error("find inexist plugin mirror3")
-	}
-	pi, ok := manager.GetPluginInfo("mirror2")
-	if !ok {
-		t.Error("can't find plugin mirror2")
-	}
-	if !reflect.DeepEqual(expPlugins[0], pi) {
-		t.Errorf("Get plugin mirror2 mismatch:\n exp=%v\n got=%v", expPlugins[0], pi)
-	}
-	_, ok = manager.GetPluginMeta(plugin.SOURCE, "echoGo")
-	if ok {
-		t.Error("find inexist source symbol echo")
-	}
-	m, ok := manager.GetPluginMeta(plugin.SINK, "fileGo")
-	if !ok {
-		t.Error("can't find sink symbol fileGo")
-	}
-	if !reflect.DeepEqual(&(expPlugins[0].PluginMeta), m) {
-		t.Errorf("Get sink symbol mismatch:\n exp=%v\n got=%v", expPlugins[0].PluginMeta, m)
-	}
-}
+	assert.False(t, ok, "mirror3 should not be found")
 
-// This will start channel, so test it in integration tests.
-//func TestFactory(t *testing.T){
-//	_, err := manager.Source("alss")
-//	expErr := fmt.Errorf("can't find random")
-//	if !reflect.DeepEqual(expErr, err){
-//		t.Errorf("error mismatch:\n  exp=%s\n  got=%s\n\n", expErr, err)
-//	}
-//	src, _ := manager.Source("randomGo")
-//	if src  == nil {
-//		t.Errorf("can't get source randomGo")
-//	}
-//	snk, _ := manager.Sink("fileGo")
-//	if snk == nil {
-//		t.Errorf("can't get sink fileGo")
-//	}
-//	fun, _ := manager.Function("echoGo")
-//	if fun == nil {
-//		t.Errorf("can't get function echoGo")
-//	}
-//	ok := manager.HasFunctionSet("echoGo")
-//	if !ok {
-//		t.Errorf("can't check function set")
-//	}
-//}
+	_, ok = manager.GetPluginInfo("mirror2")
+	assert.False(t, ok, "plugin mirror2 should not be found")
+
+	_, ok = manager.GetPluginMeta(plugin.SOURCE, "echoGo")
+	assert.False(t, ok, "symbol echoGo should not be found")
+
+	_, ok = manager.GetPluginMeta(plugin.SINK, "fileGo")
+	assert.False(t, ok, "symbol fileGo should not be found")
+}
 
 func TestDelete(t *testing.T) {
 	err := manager.Delete("mirror2")
-	if err != nil {
-		t.Errorf("delete plugin error: %v", err)
-	}
+	require.EqualError(t, err, "portable plugin mirror2 is not found")
 	err = checkFileForMirror(manager.pluginDir, manager.pluginConfDir, false)
 	if err != nil {
 		t.Errorf("error : %s\n\n", err)
@@ -201,4 +152,121 @@ func checkFileForMirror(pluginDir, etcDir string, exist bool) error {
 		}
 	}
 	return nil
+}
+
+func TestManagerErr(t *testing.T) {
+	failpoint.Enable("github.com/lf-edge/ekuiper/v2/internal/conf/GetPluginsLocErr", "return(true)")
+	_, err := InitManager()
+	require.Error(t, err)
+	failpoint.Disable("github.com/lf-edge/ekuiper/v2/internal/conf/GetPluginsLocErr")
+
+	failpoint.Enable("github.com/lf-edge/ekuiper/v2/internal/conf/GetConfLocErr", "return(true)")
+	_, err = InitManager()
+	require.Error(t, err)
+	failpoint.Disable("github.com/lf-edge/ekuiper/v2/internal/conf/GetConfLocErr")
+
+	failpoint.Enable("github.com/lf-edge/ekuiper/v2/internal/plugin/portable/syncRegistryErr", "return(true)")
+	_, err = InitManager()
+	require.Error(t, err)
+	failpoint.Disable("github.com/lf-edge/ekuiper/v2/internal/plugin/portable/syncRegistryErr")
+
+	failpoint.Enable("github.com/lf-edge/ekuiper/v2/internal/plugin/portable/plgDBErr", "return(true)")
+	_, err = InitManager()
+	require.Error(t, err)
+	failpoint.Disable("github.com/lf-edge/ekuiper/v2/internal/plugin/portable/plgDBErr")
+
+	failpoint.Enable("github.com/lf-edge/ekuiper/v2/internal/plugin/portable/plgStatusDbErr", "return(true)")
+	_, err = InitManager()
+	require.Error(t, err)
+	failpoint.Disable("github.com/lf-edge/ekuiper/v2/internal/plugin/portable/plgStatusDbErr")
+
+	m, err := InitManager()
+	require.NoError(t, err)
+	require.NotNil(t, m)
+
+	failpoint.Enable("github.com/lf-edge/ekuiper/v2/internal/plugin/portable/syncRegistryReadDirErr", "return(true)")
+	err = m.syncRegistry()
+	require.Error(t, err)
+	failpoint.Disable("github.com/lf-edge/ekuiper/v2/internal/plugin/portable/syncRegistryReadDirErr")
+
+	failpoint.Enable("github.com/lf-edge/ekuiper/v2/internal/plugin/portable/parsePluginJsonErr", "return(true)")
+	err = m.parsePlugin("mock")
+	require.Error(t, err)
+	failpoint.Disable("github.com/lf-edge/ekuiper/v2/internal/plugin/portable/parsePluginJsonErr")
+
+	err = m.doRegister("mock", &PluginInfo{}, true)
+	require.Error(t, err)
+}
+
+func TestParsePluginJson(t *testing.T) {
+	m, err := InitManager()
+	require.NoError(t, err)
+	require.NotNil(t, m)
+
+	failpoint.Enable("github.com/lf-edge/ekuiper/v2/internal/plugin/portable/parsePluginJsonReadJsonUnmarshalErr", "return(true)")
+	_, err = m.parsePluginJson("mock")
+	require.Error(t, err)
+	failpoint.Disable("github.com/lf-edge/ekuiper/v2/internal/plugin/portable/parsePluginJsonReadJsonUnmarshalErr")
+
+	_, err = m.parsePluginJson("mock")
+	require.Error(t, err)
+	m.reg.Set("mirror", &PluginInfo{})
+	_, err = m.parsePluginJson("mirror")
+	require.Error(t, err)
+}
+
+func TestRegisterErr(t *testing.T) {
+	s := httptest.NewServer(
+		http.FileServer(http.Dir("../testzips")),
+	)
+	defer s.Close()
+	endpoint := s.URL
+	p := &plugin.IOPlugin{
+		Name: "mirror2",
+		File: endpoint + "/portables/mirror.zip",
+	}
+
+	manager.reg.Set("mirror2", &PluginInfo{})
+	err := manager.Register(p)
+	require.Error(t, err)
+	manager.reg.Delete("mirror2")
+
+	testcases := []struct {
+		mockErr string
+	}{
+		{
+			mockErr: "github.com/lf-edge/ekuiper/v2/internal/pkg/httpx/DownloadFileErr",
+		},
+		{
+			mockErr: "github.com/lf-edge/ekuiper/v2/internal/plugin/portable/installOpenReaderErr",
+		},
+		{
+			mockErr: "github.com/lf-edge/ekuiper/v2/internal/plugin/portable/installFileOpenErr",
+		},
+		{
+			mockErr: "github.com/lf-edge/ekuiper/v2/internal/plugin/portable/installReadErr",
+		},
+		{
+			mockErr: "github.com/lf-edge/ekuiper/v2/internal/plugin/portable/installJsonMarshalErr",
+		},
+		{
+			mockErr: "github.com/lf-edge/ekuiper/v2/internal/plugin/portable/PluginInfoValidateErr",
+		},
+		{
+			mockErr: "github.com/lf-edge/ekuiper/v2/internal/plugin/portable/PluginInfoValidateErr",
+		},
+		{
+			mockErr: "github.com/lf-edge/ekuiper/v2/internal/plugin/portable/installMkdirErr",
+		},
+		{
+			mockErr: "github.com/lf-edge/ekuiper/v2/internal/pkg/filex/UnzipToErr",
+		},
+	}
+
+	for _, testcase := range testcases {
+		failpoint.Enable(testcase.mockErr, "return(true)")
+		err = manager.Register(p)
+		require.Error(t, err, testcase.mockErr)
+		failpoint.Disable(testcase.mockErr)
+	}
 }

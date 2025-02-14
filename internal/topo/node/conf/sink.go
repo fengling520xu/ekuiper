@@ -15,10 +15,13 @@
 package conf
 
 import (
-	"github.com/lf-edge/ekuiper/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
 )
 
-const ResourceID = "resourceId"
+const (
+	ResourceID         = "resourceId"
+	ConnectionSelector = "connectionSelector"
+)
 
 func GetSinkConf(sinkType string, action map[string]interface{}) map[string]interface{} {
 	resourceId, ok := action[ResourceID].(string)

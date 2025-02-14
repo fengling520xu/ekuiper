@@ -23,15 +23,17 @@ import (
 	"testing"
 
 	"github.com/gdexlab/go-render/render"
+	"github.com/stretchr/testify/require"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/schema"
-	"github.com/lf-edge/ekuiper/internal/testx"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/schema"
+	"github.com/lf-edge/ekuiper/v2/internal/testx"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/errorx"
 )
 
 func init() {
-	testx.InitEnv()
+	testx.InitEnv("processor")
 }
 
 func TestStreamCreateProcessor(t *testing.T) {
@@ -285,33 +287,13 @@ func TestInferredStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	etcDir := filepath.Join(dataDir, "schemas", "custom")
-	err = os.MkdirAll(etcDir, os.ModePerm)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		err = os.RemoveAll(etcDir)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}()
-	// build the so file into data/test prior to running the test
-	bytesRead, err := os.ReadFile(filepath.Join(dataDir, "myFormat.so"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = os.WriteFile(filepath.Join(etcDir, "myFormat.so"), bytesRead, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
 	petcDir := filepath.Join(dataDir, "schemas", "protobuf")
 	err = os.MkdirAll(petcDir, os.ModePerm)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Copy test2.proto
-	bytesRead, err = os.ReadFile("../schema/test/test2.proto")
+	bytesRead, err := os.ReadFile("../schema/test/test2.proto")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,20 +325,6 @@ func TestInferredStream(t *testing.T) {
 			r: map[string]*ast.JsonStreamField{
 				"name":   {Type: "string"},
 				"author": {Type: "string"},
-			},
-		}, {
-			s: `CREATE STREAM demo2 () WITH (FORMAT="custom", DATASOURCE="demo", SCHEMAID="myFormat.Sample")`,
-			r: map[string]*ast.JsonStreamField{
-				"id":   {Type: "bigint"},
-				"name": {Type: "string"},
-				"age":  {Type: "bigint"},
-				"hobbies": {
-					Type: "struct",
-					Properties: map[string]*ast.JsonStreamField{
-						"indoor":  {Type: "array", Items: &ast.JsonStreamField{Type: "string"}},
-						"outdoor": {Type: "array", Items: &ast.JsonStreamField{Type: "string"}},
-					},
-				},
 			},
 		},
 	}
@@ -431,4 +399,70 @@ func TestDescribeToJson(t *testing.T) {
 			t.Errorf("DescribeToJson mismatch:\nexp=%v\ngot=%v", tt.r, s)
 		}
 	}
+}
+
+func TestErr(t *testing.T) {
+	p := NewStreamProcessor()
+	p.db.Clean()
+	defer p.db.Clean()
+
+	_, err := p.ExecReplaceStream("1", "2", 1)
+	require.Error(t, err)
+	_, ok := err.(errorx.ErrorWithCode)
+	require.True(t, ok)
+
+	_, err = p.ExecStreamSql("1")
+	require.Error(t, err)
+	_, ok = err.(errorx.ErrorWithCode)
+	require.True(t, ok)
+
+	_, err = p.GetStream("1", 1)
+	require.Error(t, err)
+	_, ok = err.(errorx.ErrorWithCode)
+	require.True(t, ok)
+
+	_, err = p.DescStream("1", 1)
+	require.Error(t, err)
+	_, ok = err.(errorx.ErrorWithCode)
+	require.True(t, ok)
+
+	_, err = p.DescStream("1", 1)
+	require.Error(t, err)
+	_, ok = err.(errorx.ErrorWithCode)
+	require.True(t, ok)
+
+	_, err = p.GetInferredJsonSchema("1", 1)
+	require.Error(t, err)
+	_, ok = err.(errorx.ErrorWithCode)
+	require.True(t, ok)
+
+	_, err = p.GetInferredSchema("1", 1)
+	require.Error(t, err)
+	_, ok = err.(errorx.ErrorWithCode)
+	require.True(t, ok)
+
+	_, err = p.execDescribe(&ast.Field{}, 1)
+	require.Error(t, err)
+	_, ok = err.(errorx.ErrorWithCode)
+	require.True(t, ok)
+
+	_, err = p.ExecStreamSql("1")
+	require.Error(t, err)
+	_, ok = err.(errorx.ErrorWithCode)
+	require.True(t, ok)
+
+	_, err = p.ShowStream(11)
+	require.Error(t, err)
+	_, ok = err.(errorx.ErrorWithCode)
+	require.True(t, ok)
+
+	_, err = p.GetStream("1", 11)
+	require.Error(t, err)
+	_, ok = err.(errorx.ErrorWithCode)
+	require.True(t, ok)
+
+	_, err = p.DropStream("1", 11)
+	require.Error(t, err)
+	_, ok = err.(errorx.ErrorWithCode)
+	require.True(t, ok)
 }

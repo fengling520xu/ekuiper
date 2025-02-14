@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,29 +19,48 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"runtime/pprof"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"text/template"
 	"time"
 
+	"github.com/lf-edge/ekuiper/contract/v2/api"
 	"github.com/sirupsen/logrus"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/topo/transform"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/transform"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
 const (
-	LoggerKey    = "$$logger"
-	RuleStartKey = "$$ruleStart"
+	LoggerKey        = "$$logger"
+	RuleStartKey     = "$$ruleStart"
+	RuleWaitGroupKey = "$$ruleWaitGroup"
+	TraceStrategyKey = "$$TraceStrategyKey"
 )
 
+const (
+	AlwaysTraceStrategy = iota
+	HeadTraceStrategy
+)
+
+type TraceStrategy int
+
+type TraceStrategyWrapper struct {
+	sync.RWMutex
+	Strategy TraceStrategy
+}
+
 type DefaultContext struct {
-	ruleId     string
-	opId       string
-	instanceId int
-	ctx        context.Context
-	err        error
+	ruleId         string
+	opId           string
+	instanceId     int
+	ctx            context.Context
+	err            error
+	isTraceEnabled *atomic.Bool
+	strategy       *TraceStrategyWrapper
 	// Only initialized after withMeta set
 	store    api.Store
 	state    *sync.Map
@@ -51,16 +70,49 @@ type DefaultContext struct {
 	jpReg sync.Map
 }
 
+func RuleBackground(ruleName string) *DefaultContext {
+	if !conf.Config.Basic.EnableResourceProfiling {
+		return Background()
+	}
+	ctx := pprof.WithLabels(context.Background(), pprof.Labels("rule", ruleName))
+	pprof.SetGoroutineLabels(ctx)
+	c := &DefaultContext{
+		ctx:            ctx,
+		isTraceEnabled: &atomic.Bool{},
+		strategy:       &TraceStrategyWrapper{Strategy: AlwaysTraceStrategy},
+	}
+	c.isTraceEnabled.Store(false)
+	return c
+}
+
 func Background() *DefaultContext {
 	c := &DefaultContext{
-		ctx: context.Background(),
+		ctx:            context.Background(),
+		isTraceEnabled: &atomic.Bool{},
 	}
+	c.isTraceEnabled.Store(false)
+	c.strategy = &TraceStrategyWrapper{Strategy: AlwaysTraceStrategy}
+	return c
+}
+
+func WithContext(ctx context.Context) *DefaultContext {
+	c := &DefaultContext{
+		ctx:            ctx,
+		isTraceEnabled: &atomic.Bool{},
+	}
+	c.isTraceEnabled.Store(false)
+	c.strategy = &TraceStrategyWrapper{Strategy: AlwaysTraceStrategy}
 	return c
 }
 
 func WithValue(parent *DefaultContext, key, val interface{}) *DefaultContext {
 	parent.ctx = context.WithValue(parent.ctx, key, val)
 	return parent
+}
+
+func (c *DefaultContext) PropagateTracer(par *DefaultContext) {
+	c.isTraceEnabled = par.isTraceEnabled
+	c.strategy = par.strategy
 }
 
 // Deadline Implement context interface
@@ -136,7 +188,7 @@ func (c *DefaultContext) ParseTemplate(prop string, data interface{}) (string, e
 		if re.Match([]byte(prop)) {
 			tp, err = transform.GenTp(prop)
 			if err != nil {
-				return fmt.Sprintf("%v", data), err
+				return fmt.Sprintf("%v", data), fmt.Errorf("Template Invalid: %v", err)
 			}
 			c.tpReg.Store(prop, tp)
 		} else {
@@ -175,35 +227,41 @@ func (c *DefaultContext) WithMeta(ruleId string, opId string, store api.Store) a
 		c.GetLogger().Warnf("Initialize context store error for %s: %s", opId, err)
 	}
 	return &DefaultContext{
-		ruleId:     ruleId,
-		opId:       opId,
-		instanceId: 0,
-		ctx:        c.ctx,
-		store:      store,
-		state:      s,
-		tpReg:      sync.Map{},
-		jpReg:      sync.Map{},
+		ruleId:         ruleId,
+		opId:           opId,
+		instanceId:     0,
+		ctx:            c.ctx,
+		store:          store,
+		state:          s,
+		tpReg:          sync.Map{},
+		jpReg:          sync.Map{},
+		isTraceEnabled: c.isTraceEnabled,
+		strategy:       c.strategy,
 	}
 }
 
 func (c *DefaultContext) WithInstance(instanceId int) api.StreamContext {
 	return &DefaultContext{
-		instanceId: instanceId,
-		ruleId:     c.ruleId,
-		opId:       c.opId,
-		ctx:        c.ctx,
-		state:      c.state,
+		instanceId:     instanceId,
+		ruleId:         c.ruleId,
+		opId:           c.opId,
+		ctx:            c.ctx,
+		state:          c.state,
+		isTraceEnabled: c.isTraceEnabled,
+		strategy:       c.strategy,
 	}
 }
 
 func (c *DefaultContext) WithCancel() (api.StreamContext, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(c.ctx)
 	return &DefaultContext{
-		ruleId:     c.ruleId,
-		opId:       c.opId,
-		instanceId: c.instanceId,
-		ctx:        ctx,
-		state:      c.state,
+		ruleId:         c.ruleId,
+		opId:           c.opId,
+		instanceId:     c.instanceId,
+		ctx:            ctx,
+		state:          c.state,
+		isTraceEnabled: c.isTraceEnabled,
+		strategy:       c.strategy,
 	}, cancel
 }
 
@@ -231,6 +289,15 @@ func (c *DefaultContext) GetCounter(key string) (int, error) {
 		c.state.Store(key, 0)
 		return 0, nil
 	}
+}
+
+func (c *DefaultContext) GetAllState() map[string]interface{} {
+	m := make(map[string]interface{})
+	c.state.Range(func(key, value interface{}) bool {
+		m[key.(string)] = value
+		return true
+	})
+	return m
 }
 
 func (c *DefaultContext) PutState(key string, value interface{}) error {
@@ -263,4 +330,34 @@ func (c *DefaultContext) SaveState(checkpointId int64) error {
 	}
 	c.snapshot = nil
 	return nil
+}
+
+func (c *DefaultContext) EnableTracer(enabled bool) {
+	c.isTraceEnabled.Store(enabled)
+}
+
+func (c *DefaultContext) IsTraceEnabled() bool {
+	return c.isTraceEnabled.Load()
+}
+
+func (c *DefaultContext) GetStrategy() TraceStrategy {
+	c.strategy.RLock()
+	defer c.strategy.RUnlock()
+	return c.strategy.Strategy
+}
+
+func (c *DefaultContext) SetStrategy(s TraceStrategy) {
+	c.strategy.Lock()
+	defer c.strategy.Unlock()
+	c.strategy.Strategy = s
+}
+
+func StringToStrategy(s string) TraceStrategy {
+	switch strings.ToLower(s) {
+	case "always":
+		return AlwaysTraceStrategy
+	case "head":
+		return HeadTraceStrategy
+	}
+	return AlwaysTraceStrategy
 }

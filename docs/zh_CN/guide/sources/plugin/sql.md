@@ -12,6 +12,8 @@
 
 该插件默认支持 `sqlserver\postgres\mysql\sqlite3\oracle` 驱动。用户可以自己编译只支持一个驱动的插件，例如如果他只想要sqlserver，那么他可以用 build tag sqlserver 构建。
 
+当使用 `sqlserver` 作为目标时，需要确认该 `sqlserver` 暴露了 1434 端口。
+
 ### 默认构建命令
 
 ```shell
@@ -63,6 +65,8 @@ template_config:
     dateTimeFormat: "YYYY-MM-dd HH:mm:ssSSS"
 ```
 
+你可以通过 api 的方式提前检查对应 sink 端点的连通性: [连通性检查](../../../api/restapi/connection.md#连通性检查)
+
 ### 全局配置
 
 用户可以在此处指定全局 sql 源设置。`default` 部分中指定的配置项将在运行此源时作为源的默认设置。
@@ -80,7 +84,6 @@ template_config:
 | mysql      | mysql://user:test@140.210.204.147/user?parseTime=true |
 | sql server | sqlserver://username:password@140.210.204.147/testdb  |
 | postgres   | postgres://user:pass@localhost/dbname                 |
-| postgres   | postgres://user:pass@localhost/dbname                 |
 | sqlite     | sqlite:/path/to/file.db                               |
 
 ### internalSqlQueryCfg
@@ -91,12 +94,38 @@ template_config:
 * `indexValue`: 初始索引值，如果用户指定该字段，查询将使用这个初始值作为查询条件，当获得更大的值时将更新下一个查询
 * `indexFieldType`: 索引字段的列类型，如果是 dateTime 类型，必须将该字段设置为 `DATETIME`
 * `dateTimeFormat`: 索引字段的时间格式
+* `indexFields`: 复合索引列
 
 | table   | limit | indexField   | indexValue            | indexFieldType | dateTimeFormat        | sql query statement                                                                                 |
 | ------- | ----- | ------------ | --------------------- | -------------- | --------------------- | --------------------------------------------------------------------------------------------------- |
 | Student | 10    |              |                       |                |                       | select * from Student limit 10                                                                      |
 | Student | 10    | stun         | 100                   |                |                       | select * from Student where stun > 100 limit 10                                                     |
 | Student | 10    | registerTime | "2022-04-21 10:23:55" | "DATETIME"     | "YYYY-MM-dd HH:mm:ss" | select * from Student where registerTime > '2022-04-21 10:23:55' order by registerTime ASC limit 10 |
+
+```yaml
+internalSqlQueryCfg:
+  # 要查询的表名
+  table: t
+  # 需要从结果中获取多少条目
+  limit: 1
+  indexFields:
+      # 索引字段的时间格式
+    - indexField: a
+      # 表的哪一列作为索引来记录偏移量
+      indexValue: "2022-04-21 10:23:55"
+      # 索引字段的列类型，如果是 dateTime 类型，必须将该字段设置为 `DATETIME`
+      indexFieldType: "DATETIME"
+      # 索引字段的时间格式
+      dateTimeFormat: "YYYY-MM-dd HH:mm:ss"
+    - indexField: b
+      indexValue: 1
+```
+
+对于 indexFields，eKuiper 将会对于所有索引列生成相应的查询语句，值得注意的是，对于多索引列的查询语句，indexFields 的声明顺序将会决定索引列排序的优先顺序，对于上述例子，将会生成以下 SQL:
+
+```sql
+select * from t where a > '2022-04-21 10:23:55' and b > 1 order by a asc, b asc limit 1
+```
 
 ### templateSqlQueryCfg
 
@@ -105,13 +134,15 @@ template_config:
 * `indexValue`: 同上
 * `indexFieldType`: 同上
 * `dateTimeFormat`: 同上
-
+* `indexFields`: 同上
 ::: v-pre
+
 | TemplateSql                                                                                       | indexField   | indexValue            | indexFieldType | dateTimeFormat        | sql query statement                                                                                 |
 | ------------------------------------------------------------------------------------------------- | ------------ | --------------------- | -------------- | --------------------- | --------------------------------------------------------------------------------------------------- |
 | select * from Student limit 10                                                                    |              |                       |                |                       | select * from Student limit 10                                                                      |
 | select * from Student where stun > {{.stun}} limit 10                                             | stun         | 100                   |                |                       | select * from Student where stun > 100 limit 10                                                     |
 | select * from Student where registerTime > '{{.registerTime}}' order by registerTime ASC limit 10 | registerTime | "2022-04-21 10:23:55" | "DATETIME"     | "YYYY-MM-dd HH:mm:ss" | select * from Student where registerTime > '2022-04-21 10:23:55' order by registerTime ASC limit 10 |
+
 :::
 
 ### *注意*: 用户只需要设置 internalSqlQueryCfg 或 templateSqlQueryCfg，如果两者都设置，将使用 templateSqlQueryCfg

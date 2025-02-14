@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,13 +21,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/testx"
-	"github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/internal/topo/state"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/testx"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/state"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
 func TestMiscFunc_Apply1(t *testing.T) {
@@ -116,6 +116,20 @@ func TestMiscFunc_Apply1(t *testing.T) {
 			},
 			result: []map[string]interface{}{{
 				"a": strings.ToLower("07E547D9586F6A73F73FBAC0435ED76951218FB7D0C8D788A309D785436BBB642E93A252A954F23912547D1E8A3B5ED6E1BFD7097821233FA0538F3DB854FEE6"),
+			}},
+		},
+		{
+			sql: "SELECT crc32(a) AS a FROM test",
+			data: &xsql.Tuple{
+				Emitter: "test",
+				Message: xsql.Message{
+					"a": "The quick brown fox jumps over the lazy dog",
+					"b": "myb",
+					"c": "myc",
+				},
+			},
+			result: []map[string]interface{}{{
+				"a": strings.ToLower("414FA339"),
 			}},
 		},
 
@@ -295,7 +309,7 @@ func TestMqttFunc_Apply2(t *testing.T) {
 			data: &xsql.JoinTuples{
 				Content: []*xsql.JoinTuple{
 					{
-						Tuples: []xsql.TupleRow{
+						Tuples: []xsql.Row{
 							&xsql.Tuple{Emitter: "src1", Message: xsql.Message{"id1": "1", "f1": "v1"}, Metadata: xsql.Metadata{"topic": "devices/type1/device001"}},
 							&xsql.Tuple{Emitter: "src2", Message: xsql.Message{"id2": "1", "f2": "w1"}, Metadata: xsql.Metadata{"topic": "devices/type2/device001"}},
 						},
@@ -963,7 +977,7 @@ func TestChangedFuncs_Apply1(t *testing.T) {
 	contextLogger := conf.Log.WithField("rule", "TestChangedFuncs_Apply1")
 
 	for i, tt := range tests {
-		tempStore, _ := state.CreateStore("mockRule"+strconv.Itoa(i), api.AtMostOnce)
+		tempStore, _ := state.CreateStore("mockRule"+strconv.Itoa(i), def.AtMostOnce)
 		ctx := context.WithValue(context.Background(), context.LoggerKey, contextLogger).WithMeta("mockRule"+strconv.Itoa(i), "project", tempStore)
 		stmt, err := xsql.NewParser(strings.NewReader(tt.sql)).Parse()
 		if err != nil || stmt == nil {
@@ -1129,7 +1143,7 @@ func TestLagFuncs_Apply1(t *testing.T) {
 	contextLogger := conf.Log.WithField("rule", "TestChangedFuncs_Apply1")
 
 	for i, tt := range tests {
-		tempStore, _ := state.CreateStore("mockRule"+strconv.Itoa(i), api.AtMostOnce)
+		tempStore, _ := state.CreateStore("mockRule"+strconv.Itoa(i), def.AtMostOnce)
 		ctx := context.WithValue(context.Background(), context.LoggerKey, contextLogger).WithMeta("mockRule"+strconv.Itoa(i), "project", tempStore)
 		stmt, err := xsql.NewParser(strings.NewReader(tt.sql)).Parse()
 		if err != nil || stmt == nil {

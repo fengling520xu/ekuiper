@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,11 +17,11 @@ package function
 import (
 	"fmt"
 
+	"github.com/lf-edge/ekuiper/contract/v2/api"
 	"github.com/montanaflynn/stats"
 
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
 func registerAggFunc() {
@@ -180,7 +180,7 @@ func registerAggFunc() {
 		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
 			arg0 := args[0].([]interface{})
 			if len(arg0) > 0 {
-				float64Slice, err := cast.ToFloat64Slice(arg0, cast.CONVERT_SAMEKIND)
+				float64Slice, err := cast.ToFloat64Slice(arg0, cast.CONVERT_SAMEKIND, cast.IGNORE_NIL)
 				if err != nil {
 					return fmt.Errorf("requires float64 slice but found %[1]T(%[1]v)", arg0), false
 				}
@@ -203,7 +203,7 @@ func registerAggFunc() {
 		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
 			arg0 := args[0].([]interface{})
 			if len(arg0) > 0 {
-				float64Slice, err := cast.ToFloat64Slice(arg0, cast.CONVERT_SAMEKIND)
+				float64Slice, err := cast.ToFloat64Slice(arg0, cast.CONVERT_SAMEKIND, cast.IGNORE_NIL)
 				if err != nil {
 					return fmt.Errorf("requires float64 slice but found %[1]T(%[1]v)", arg0), false
 				}
@@ -226,7 +226,7 @@ func registerAggFunc() {
 		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
 			arg0 := args[0].([]interface{})
 			if len(arg0) > 0 {
-				float64Slice, err := cast.ToFloat64Slice(arg0, cast.CONVERT_SAMEKIND)
+				float64Slice, err := cast.ToFloat64Slice(arg0, cast.CONVERT_SAMEKIND, cast.IGNORE_NIL)
 				if err != nil {
 					return fmt.Errorf("requires float64 slice but found %[1]T(%[1]v)", arg0), false
 				}
@@ -249,7 +249,7 @@ func registerAggFunc() {
 		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
 			arg0 := args[0].([]interface{})
 			if len(arg0) > 0 {
-				float64Slice, err := cast.ToFloat64Slice(arg0, cast.CONVERT_SAMEKIND)
+				float64Slice, err := cast.ToFloat64Slice(arg0, cast.CONVERT_SAMEKIND, cast.IGNORE_NIL)
 				if err != nil {
 					return fmt.Errorf("requires float64 slice but found %[1]T(%[1]v)", arg0), false
 				}
@@ -286,7 +286,7 @@ func registerAggFunc() {
 			}
 
 			if len(arg0) > 0 {
-				float64Slice, err := cast.ToFloat64Slice(arg0, cast.CONVERT_SAMEKIND)
+				float64Slice, err := cast.ToFloat64Slice(arg0, cast.CONVERT_SAMEKIND, cast.IGNORE_NIL)
 				if err != nil {
 					return fmt.Errorf("requires float64 slice but found %[1]T(%[1]v)", arg0), false
 				}
@@ -322,7 +322,7 @@ func registerAggFunc() {
 				arg1Float64 = val
 			}
 			if len(arg0) > 0 {
-				float64Slice, err := cast.ToFloat64Slice(arg0, cast.CONVERT_SAMEKIND)
+				float64Slice, err := cast.ToFloat64Slice(arg0, cast.CONVERT_SAMEKIND, cast.IGNORE_NIL)
 				if err != nil {
 					return fmt.Errorf("requires float64 slice but found %[1]T(%[1]v)", arg0), false
 				}
@@ -347,6 +347,9 @@ func registerAggFunc() {
 			if !ok {
 				return fmt.Errorf("the first argument to the aggregate function should be []interface but found %[1]T(%[1]v)", args[0]), false
 			}
+			if len(arg0) == 0 {
+				return nil, true
+			}
 			args1, ok := args[1].([]interface{})
 			if !ok {
 				return fmt.Errorf("the second argument to the aggregate function should be []interface but found %[1]T(%[1]v)", args[1]), false
@@ -354,9 +357,6 @@ func registerAggFunc() {
 			arg1, ok := getFirstValidArg(args1).(bool)
 			if !ok {
 				return fmt.Errorf("the second parameter requires bool but found %[1]T(%[1]v)", getFirstValidArg(args1)), false
-			}
-			if len(arg0) == 0 {
-				return nil, true
 			}
 			if arg1 {
 				for i := len(arg0) - 1; i >= 0; i-- {

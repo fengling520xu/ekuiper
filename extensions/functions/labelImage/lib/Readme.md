@@ -1,16 +1,18 @@
 # Tensorflow Lite C API library
 
-This is the prebuilt tensorflow lite c library for debian 10. It can be used directly in eKuiper docker image of tags x.x.x or x.x.x-slim.
+This is the prebuilt tensorflow lite c library for debian 10. It can be used directly in eKuiper docker image of tags
+x.x.x or x.x.x-slim.
 
 To use in other environment, you need to build the library from source.
 
 ## Build from source
 
-Here are the steps to build from source in debian. 
+Here are the steps to build from source in debian.
 
 1. Install [Python](https://www.tensorflow.org/install/pip#1.-install-the-python-development-environment-on-your-system)
 
-2. Install required python lib: `pip3 install -r requirements.txt`. The requirements are from `tensorflow/tensorflow/tools/pip_package/setup.py` of the corresponding tensorflow version.
+2. Install required python lib: `pip3 install -r requirements.txt`. The requirements are
+   from `tensorflow/tensorflow/tools/pip_package/setup.py` of the corresponding tensorflow version.
 
 3. Install [Bazel](https://docs.bazel.build/versions/4.0.0/install-ubuntu.html)
 

@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,9 @@ package portable
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -27,18 +29,27 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/meta"
-	"github.com/lf-edge/ekuiper/internal/pkg/filex"
-	"github.com/lf-edge/ekuiper/internal/pkg/httpx"
-	"github.com/lf-edge/ekuiper/internal/pkg/store"
-	"github.com/lf-edge/ekuiper/internal/plugin"
-	"github.com/lf-edge/ekuiper/internal/plugin/portable/runtime"
-	"github.com/lf-edge/ekuiper/pkg/cast"
-	"github.com/lf-edge/ekuiper/pkg/kv"
+	"github.com/pingcap/failpoint"
+
+	"github.com/lf-edge/ekuiper/v2/internal/binder"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/meta"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/filex"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/httpx"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/store"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin/portable/runtime"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/infra"
+	"github.com/lf-edge/ekuiper/v2/pkg/kv"
 )
 
-var manager *Manager
+var (
+	manager *Manager
+	_       binder.SourceFactory = manager
+	_       binder.SinkFactory   = manager
+	_       binder.FuncFactory   = manager
+)
 
 type Manager struct {
 	pluginDir     string
@@ -56,7 +67,7 @@ func InitManager() (*Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot find plugins folder: %s", err)
 	}
-	dataDir, err := conf.GetDataLoc()
+	etcDir, err := conf.GetConfLoc()
 	if err != nil {
 		return nil, fmt.Errorf("cannot find data folder: %s", err)
 	}
@@ -71,7 +82,7 @@ func InitManager() (*Manager, error) {
 	pluginDir = filepath.Join(pluginDir, "portable")
 	m := &Manager{
 		pluginDir:     pluginDir,
-		pluginConfDir: dataDir,
+		pluginConfDir: etcDir,
 		reg:           reg,
 	}
 	err = m.syncRegistry()
@@ -79,10 +90,16 @@ func InitManager() (*Manager, error) {
 		return nil, err
 	}
 	plgDb, err := store.GetKV("portablePlugin")
+	failpoint.Inject("plgDBErr", func() {
+		err = errors.New("plgDBErr")
+	})
 	if err != nil {
 		return nil, fmt.Errorf("error when opening portablePlugin: %v", err)
 	}
 	plgStatusDb, err := store.GetKV("portablePluginStatus")
+	failpoint.Inject("plgStatusDbErr", func() {
+		err = errors.New("plgStatusDbErr")
+	})
 	if err != nil {
 		return nil, fmt.Errorf("error when opening portablePluginStatus: %v", err)
 	}
@@ -90,10 +107,6 @@ func InitManager() (*Manager, error) {
 	m.plgStatusDb = plgStatusDb
 	manager = m
 	return m, nil
-}
-
-func GetManager() *Manager {
-	return manager
 }
 
 func MockManager(plugins map[string]*PluginInfo) (*Manager, error) {
@@ -114,17 +127,30 @@ func MockManager(plugins map[string]*PluginInfo) (*Manager, error) {
 	return &Manager{reg: reg}, nil
 }
 
-func (m *Manager) syncRegistry() error {
+func (m *Manager) syncRegistry() (err error) {
+	defer func() {
+		failpoint.Inject("syncRegistryErr", func() {
+			err = errors.New("syncRegistryErr")
+		})
+	}()
+
 	files, err := os.ReadDir(m.pluginDir)
+	failpoint.Inject("syncRegistryReadDirErr", func() {
+		err = errors.New("syncRegistryReadDirErr")
+	})
 	if err != nil {
 		return fmt.Errorf("read path '%s' error: %v", m.pluginDir, err)
 	}
 	for _, file := range files {
 		if file.IsDir() {
-			err := m.parsePlugin(file.Name())
-			if err != nil {
-				conf.Log.Warn(err)
-			}
+			// Parse plugins asyncly because it will run the plugin which may block in handshake
+			go infra.SafeRun(func() error {
+				err := m.parsePlugin(file.Name())
+				if err != nil {
+					conf.Log.Warn(err)
+				}
+				return err
+			})
 		} else {
 			conf.Log.Warnf("find file `%s`, portable plugin must be a directory", file.Name())
 		}
@@ -142,7 +168,8 @@ func (m *Manager) parsePlugin(name string) error {
 
 func (m *Manager) doRegister(name string, pi *PluginInfo, isInit bool) error {
 	exeAbs := filepath.Clean(filepath.Join(m.pluginDir, name, pi.Executable))
-	if _, err := os.Stat(exeAbs); err != nil {
+	_, err := os.Stat(exeAbs)
+	if err != nil {
 		return fmt.Errorf("cannot find executable `%s` when loading portable plugins: %v", exeAbs, err)
 	}
 	pi.Executable = exeAbs
@@ -161,14 +188,23 @@ func (m *Manager) doRegister(name string, pi *PluginInfo, isInit bool) error {
 		}
 	}
 	conf.Log.Infof("Installed portable plugin %s successfully", name)
-	runtime.GetPluginInsManager().CreateIns(&pi.PluginMeta)
-	return nil
+	// TODO install async? This may take time at start up
+	_, err = runtime.GetPluginInsManager().CreateIns(&pi.PluginMeta)
+	return err
 }
 
-func (m *Manager) parsePluginJson(name string) (*PluginInfo, error) {
+func (m *Manager) parsePluginJson(name string) (info *PluginInfo, err error) {
+	defer func() {
+		failpoint.Inject("parsePluginJsonErr", func() {
+			err = errors.New("parsePluginJsonErr")
+		})
+	}()
 	jsonPath := filepath.Join(m.pluginDir, name, name+".json")
 	pi := &PluginInfo{PluginMeta: runtime.PluginMeta{Name: name}}
-	err := filex.ReadJsonUnmarshal(jsonPath, pi)
+	err = filex.ReadJsonUnmarshal(jsonPath, pi)
+	failpoint.Inject("parsePluginJsonReadJsonUnmarshalErr", func() {
+		err = errors.New("parsePluginJsonReadJsonUnmarshalErr")
+	})
 	if err != nil {
 		return nil, fmt.Errorf("cannot read json file `%s` when loading portable plugins: %v", jsonPath, err)
 	}
@@ -236,9 +272,13 @@ func (m *Manager) install(name, src string, shellParas []string) (resultErr erro
 				_ = os.Remove(p)
 			}
 			_ = os.Remove(pluginTarget)
+			m.reg.Delete(name)
 		}
 	}()
 	r, err := zip.OpenReader(src)
+	failpoint.Inject("installOpenReaderErr", func() {
+		err = errors.New("installOpenReaderErr")
+	})
 	if err != nil {
 		return err
 	}
@@ -250,19 +290,29 @@ func (m *Manager) install(name, src string, shellParas []string) (resultErr erro
 		filesNumber++
 		if file.Name == jsonName {
 			jf, err := file.Open()
+			failpoint.Inject("installFileOpenErr", func() {
+				err = errors.New("installFileOpenErr")
+			})
 			if err != nil {
 				err = fmt.Errorf("invalid json file %s: %s", jsonName, err)
 				return err
 			}
 			pi = &PluginInfo{PluginMeta: runtime.PluginMeta{Name: name}}
 			allBytes, err := io.ReadAll(jf)
+			failpoint.Inject("installReadErr", func() {
+				err = errors.New("installReadErr")
+			})
 			if err != nil {
 				return err
 			}
 			err = json.Unmarshal(allBytes, pi)
+			failpoint.Inject("installJsonMarshalErr", func() {
+				err = errors.New("installJsonMarshalErr")
+			})
 			if err != nil {
 				return err
 			}
+			break
 		}
 	}
 	if pi == nil {
@@ -284,6 +334,9 @@ func (m *Manager) install(name, src string, shellParas []string) (resultErr erro
 	d := filepath.Clean(pluginTarget)
 	if _, err := os.Stat(d); os.IsNotExist(err) {
 		err = os.MkdirAll(d, 0o755)
+		failpoint.Inject("installMkdirErr", func() {
+			err = errors.New("installMkdirErr")
+		})
 		if err != nil {
 			return err
 		}
@@ -444,10 +497,15 @@ func (m *Manager) pluginRegisterForImport(k, v string) error {
 	return nil
 }
 
-func (m *Manager) PluginImport(plugins map[string]string) map[string]string {
+func (m *Manager) PluginImport(ctx context.Context, plugins map[string]string) map[string]string {
 	errMap := map[string]string{}
 	_ = m.plgStatusDb.Clean()
 	for k, v := range plugins {
+		select {
+		case <-ctx.Done():
+			return errMap
+		default:
+		}
 		err := m.pluginRegisterForImport(k, v)
 		if err != nil {
 			_ = m.plgStatusDb.Set(k, err.Error())
@@ -458,9 +516,14 @@ func (m *Manager) PluginImport(plugins map[string]string) map[string]string {
 	return errMap
 }
 
-func (m *Manager) PluginPartialImport(plugins map[string]string) map[string]string {
+func (m *Manager) PluginPartialImport(ctx context.Context, plugins map[string]string) map[string]string {
 	errMap := map[string]string{}
 	for k, v := range plugins {
+		select {
+		case <-ctx.Done():
+			return errMap
+		default:
+		}
 		var installScript string
 		found, _ := m.plgInstallDb.Get(k, &installScript)
 		if !found {

@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,74 +15,58 @@
 package memory
 
 import (
-	"fmt"
-	"reflect"
+	"strings"
 	"testing"
 
-	"github.com/benbjohnson/clock"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/io/memory/pubsub"
-	"github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	mockContext "github.com/lf-edge/ekuiper/v2/pkg/mock/context"
 )
 
-func TestUpdate(t *testing.T) {
-	contextLogger := conf.Log.WithField("rule", "test2")
-	ctx := context.WithValue(context.Background(), context.LoggerKey, contextLogger)
-	ms := GetSink()
-	err := ms.Configure(map[string]interface{}{"topic": "testupdate", "rowkindField": "verb", "keyField": "id"})
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	err = ms.Open(ctx)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	data := []map[string]interface{}{
-		{"id": "1", "verb": "insert", "name": "test1"},
-		{"id": "2", "verb": "insert", "name": "test2"},
-		{"id": "1", "verb": "update", "name": "test1"},
-		{"id": "2", "verb": "delete", "name": "test2"},
-	}
-	c := pubsub.CreateSub("testupdate", nil, "testSource", 100)
-	go func() {
-		for _, d := range data {
-			ms.Collect(ctx, d)
-		}
-	}()
-	var actual []api.SourceTuple
-	for i := 0; i < 4; i++ {
-		d := <-c
-		fmt.Println(d)
-		actual = append(actual, d)
-	}
-	mc := conf.Clock.(*clock.Mock)
-	expects := []api.SourceTuple{
-		&pubsub.UpdatableTuple{
-			DefaultSourceTuple: api.NewDefaultSourceTupleWithTime(map[string]interface{}{"id": "1", "verb": "insert", "name": "test1"}, map[string]interface{}{"topic": "testupdate"}, mc.Now()),
-			Rowkind:            "insert",
-			Keyval:             "1",
+func TestWrapUpdatable(t *testing.T) {
+	tests := []struct {
+		name  string
+		value map[string]any
+		err   string
+	}{
+		{
+			name: "empty rowkind with wrong key",
+			value: map[string]any{
+				"nokey": 100,
+			},
+			err: "key field id not found in data",
 		},
-		&pubsub.UpdatableTuple{
-			DefaultSourceTuple: api.NewDefaultSourceTupleWithTime(map[string]interface{}{"id": "2", "verb": "insert", "name": "test2"}, map[string]interface{}{"topic": "testupdate"}, mc.Now()),
-			Rowkind:            "insert",
-			Keyval:             "2",
+		{
+			name: "wrong rowkind type",
+			value: map[string]any{
+				"rowkind": 100,
+			},
+			err: "rowkind field rowkind is not a string in data",
 		},
-		&pubsub.UpdatableTuple{
-			DefaultSourceTuple: api.NewDefaultSourceTupleWithTime(map[string]interface{}{"id": "1", "verb": "update", "name": "test1"}, map[string]interface{}{"topic": "testupdate"}, mc.Now()),
-			Rowkind:            "update",
-			Keyval:             "1",
-		},
-		&pubsub.UpdatableTuple{
-			DefaultSourceTuple: api.NewDefaultSourceTupleWithTime(map[string]interface{}{"id": "2", "verb": "delete", "name": "test2"}, map[string]interface{}{"topic": "testupdate"}, mc.Now()),
-			Rowkind:            "delete",
-			Keyval:             "2",
+		{
+			name: "wrong rowkind value",
+			value: map[string]any{
+				"rowkind": "test",
+			},
+			err: "invalid rowkind test",
 		},
 	}
-	if !reflect.DeepEqual(actual, expects) {
-		t.Errorf("expect %v but got %v", expects, actual)
+	s := &sink{}
+	ctx := mockContext.NewMockContext("rule1", "test")
+	err := s.Provision(ctx, map[string]any{
+		"rowkindField": "rowkind",
+		"keyField":     "id",
+	})
+	assert.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := s.wrapUpdatable(&xsql.Tuple{
+				Message: tt.value,
+			})
+			require.Error(t, err)
+			require.True(t, strings.Contains(err.Error(), tt.err))
+		})
 	}
 }

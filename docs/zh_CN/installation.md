@@ -82,8 +82,6 @@ eKuiper manager 是一个免费的 eKuiper 管理控制台，以 Docker 镜像�
 
 eKuiper 发布了以下操作系统的二进制包，支持 AMD64、ARM 和 ARM64 等 CPU 架构。
 
-- CentOS 7 (EL7)
-- CentOS 8 (EL8)
 - Raspbian 10
 - Debian 9
 - Debian 10
@@ -122,13 +120,6 @@ eKuiper 发布了以下操作系统的二进制包，支持 AMD64、ARM 和 ARM6
      $ sudo apt install ./kuiper-x.x.x-linux-amd64.deb
      ```
 
-   - RPM 包：
-
-     ```shell
-     # for CentOS
-     $ sudo rpm -ivh kuiper-x.x.x-linux-amd64.rpm
-     ```
-
 3. 启动 eKuiper.
    - 快速启动
 
@@ -147,12 +138,6 @@ eKuiper 发布了以下操作系统的二进制包，支持 AMD64、ARM 和 ARM6
 
      ```shell
      sudo apt remove --purge kuiper
-     ```
-
-   - RPM:
-
-     ```shell
-     sudo yum remove kuiper
      ```
 
 当按软件包安装时，eKuiper 的文件夹不在同一个目录中。安装后的目录结构如下。
@@ -252,7 +237,7 @@ sqlite，因此 `CGO_ENABLE` 必须设置为1。在交叉编译时，必须安�
 2. 更新 Makefile 里的编译相关参数如下:
 
       ```shell
-      GO111MODULE=on CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build -trimpath -ldflags="-s -w -X main.Version=$(VERSION) -X main.LoadFileType=relative" -o kuiperd cmd/kuiperd/main.go
+      GO111MODULE=on CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build -trimpath -ldflags="-s -w -X github.com/lf-edge/ekuiper/cmd.Version=$(VERSION) -X github.com/lf-edge/ekuiper/cmd.LoadFileType=relative" -o kuiperd cmd/kuiperd/main.go
       ```
 
 3. 运行 `make` 。

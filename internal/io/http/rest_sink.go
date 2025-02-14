@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,58 +15,121 @@
 package http
 
 import (
+	"errors"
 	"fmt"
-	"net/http"
-	"net/url"
 	"strings"
-	"time"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/pkg/httpx"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/errorx"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+	"github.com/pingcap/failpoint"
+
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/httpx"
+	"github.com/lf-edge/ekuiper/v2/pkg/errorx"
 )
 
 type RestSink struct {
-	ClientConf
+	*ClientConf
+	noHeaderTemplate bool
 }
 
-func (ms *RestSink) Configure(ps map[string]interface{}) error {
-	conf.Log.Infof("Initialized rest sink with configurations %#v.", ps)
-	return ms.InitConf("", ps)
+var bodyTypeFormat = map[string]string{
+	"json": "json",
+	"form": "urlencoded",
 }
 
-func (ms *RestSink) Open(ctx api.StreamContext) error {
-	ctx.GetLogger().Infof("Opening HTTP pull source with conf %+v", ms.config)
+func (r *RestSink) Provision(ctx api.StreamContext, configs map[string]any) error {
+	r.ClientConf = &ClientConf{}
+	err := r.InitConf("", configs)
+	if err != nil {
+		return err
+	}
+	if r.ClientConf.config.Format == "" {
+		r.ClientConf.config.Format = "json"
+	}
+	if rf, ok := bodyTypeFormat[r.ClientConf.config.BodyType]; ok && r.ClientConf.config.Format != rf {
+		return fmt.Errorf("format must be %s if bodyType is %s", rf, r.ClientConf.config.BodyType)
+	}
 	return nil
 }
 
-func (ms *RestSink) collectWithUrl(ctx api.StreamContext, item interface{}, desUrl string) error {
-	logger := ctx.GetLogger()
-	decodedData, _, err := ctx.TransformOutput(item)
-	if err != nil {
-		logger.Warnf("rest sink decode data error: %v", err)
-		return fmt.Errorf("rest sink decode data error: %v", err)
-	}
+func (r *RestSink) Close(ctx api.StreamContext) error {
+	return nil
+}
 
-	resp, err := ms.sendWithUrl(ctx, decodedData, item, desUrl)
-	if err != nil {
-		e := err.Error()
-		if urlErr, ok := err.(*url.Error); ok {
-			// consider timeout and temporary error as recoverable
-			if urlErr.Timeout() || urlErr.Temporary() {
-				e = errorx.IOErr
+func (r *RestSink) Connect(ctx api.StreamContext, sch api.StatusChangeHandler) error {
+	sch(api.ConnectionConnected, "")
+	return nil
+}
+
+func (r *RestSink) Collect(ctx api.StreamContext, item api.RawTuple) error {
+	logger := ctx.GetLogger()
+	headers := r.config.Headers
+	bodyType := r.config.BodyType
+	method := r.config.Method
+	u := r.config.Url
+
+	if dp, ok := item.(api.HasDynamicProps); ok {
+		if !r.noHeaderTemplate {
+			r.noHeaderTemplate = true
+			for k, v := range r.config.Headers {
+				headers = make(map[string]string, len(r.config.Headers))
+				nv, ok := dp.DynamicProps(v)
+				if ok {
+					headers[k] = nv
+					r.noHeaderTemplate = false
+				} else {
+					headers[k] = v
+				}
 			}
 		}
-		return fmt.Errorf(`%s: rest sink fails to send out the data: method=%s path="%s" request_body="%s"`,
-			e,
-			ms.config.Method,
-			ms.config.Url,
-			decodedData,
-		)
+		nb, ok := dp.DynamicProps(bodyType)
+		if ok {
+			bodyType = nb
+		}
+		nm, ok := dp.DynamicProps(method)
+		if ok {
+			method = nm
+		}
+		nu, ok := dp.DynamicProps(u)
+		if ok {
+			u = nu
+		}
+	}
+
+	switch r.config.Compression {
+	case "zstd":
+		if headers == nil {
+			headers = make(map[string]string)
+		}
+		headers["Content-Encoding"] = "zstd"
+	case "gzip":
+		if headers == nil {
+			headers = make(map[string]string)
+		}
+		headers["Content-Encoding"] = "gzip"
+	}
+
+	resp, err := httpx.Send(ctx.GetLogger(), r.client, bodyType, method, u, headers, item.Raw())
+	failpoint.Inject("recoverAbleErr", func() {
+		err = errors.New("connection reset by peer")
+	})
+	if err != nil {
+		originErr := err
+		recoverAble := errorx.IsRecoverAbleError(originErr)
+		if recoverAble {
+			logger.Errorf("rest sink meet error:%v, recoverAble:%v, ruleID:%v", originErr.Error(), recoverAble, ctx.GetRuleId())
+			return errorx.NewIOErr(fmt.Sprintf(`rest sink fails to send out the data:err=%s recoverAble=%v method=%s path="%s" request_body="%s"`,
+				originErr.Error(),
+				recoverAble,
+				method,
+				u, string(item.Raw())))
+		}
+		return fmt.Errorf(`rest sink fails to send out the data:err=%s recoverAble=%v method=%s path="%s" request_body="%s"`,
+			originErr.Error(),
+			recoverAble,
+			method, u, string(item.Raw()))
 	} else {
 		logger.Debugf("rest sink got response %v", resp)
-		_, b, err := ms.parseResponse(ctx, resp, ms.config.DebugResp, nil)
+		_, b, err := r.parseResponse(ctx, resp, "", r.config.DebugResp, false)
 		// do not record response body error as it is not an error in the sink action.
 		if err != nil && !strings.HasPrefix(err.Error(), BODY_ERR) {
 			if strings.HasPrefix(err.Error(), BODY_ERR) {
@@ -74,74 +137,22 @@ func (ms *RestSink) collectWithUrl(ctx api.StreamContext, item interface{}, desU
 			} else {
 				return fmt.Errorf(`parse response error: %s. | method=%s path="%s" status=%d response_body="%s"`,
 					err,
-					ms.config.Method,
-					ms.config.Url,
+					method,
+					u,
 					resp.StatusCode,
 					b,
 				)
 			}
 		}
-		if ms.config.DebugResp {
-			logger.Infof("Response raw content: %s\n", string(b))
+		if r.config.DebugResp {
+			logger.Infof("Response raw content: %s\n", b)
 		}
 	}
 	return nil
 }
 
-func (ms *RestSink) Collect(ctx api.StreamContext, item interface{}) error {
-	ctx.GetLogger().Debugf("rest sink receive %s", item)
-	return ms.collectWithUrl(ctx, item, ms.config.Url)
+func GetSink() api.Sink {
+	return &RestSink{}
 }
 
-func (ms *RestSink) CollectResend(ctx api.StreamContext, item interface{}) error {
-	ctx.GetLogger().Debugf("rest sink resend %s", item)
-	return ms.collectWithUrl(ctx, item, ms.config.ResendUrl)
-}
-
-func (ms *RestSink) sendWithUrl(ctx api.StreamContext, decodedData []byte, v interface{}, desUrl string) (*http.Response, error) {
-	// Allow to use tokens in headers and check oAuth token expiration
-	if ms.accessConf != nil && ms.accessConf.ExpireInSecond > 0 &&
-		int(time.Now().Sub(ms.tokenLastUpdateAt).Abs().Seconds()) >= ms.accessConf.ExpireInSecond {
-		ctx.GetLogger().Debugf("Refreshing token for REST sink")
-		if err := ms.refresh(ctx); err != nil {
-			ctx.GetLogger().Warnf("Refresh REST sink token error: %v", err)
-		}
-	}
-	if ms.tokens != nil {
-		switch dt := v.(type) {
-		case map[string]interface{}:
-			for k, vv := range ms.tokens {
-				dt[k] = vv
-			}
-		case []map[string]interface{}:
-			for m := range dt {
-				for k, vv := range ms.tokens {
-					dt[m][k] = vv
-				}
-			}
-		}
-	}
-	bodyType, err := ctx.ParseTemplate(ms.config.BodyType, v)
-	if err != nil {
-		return nil, err
-	}
-	method, err := ctx.ParseTemplate(ms.config.Method, v)
-	if err != nil {
-		return nil, err
-	}
-	u, err := ctx.ParseTemplate(desUrl, v)
-	if err != nil {
-		return nil, err
-	}
-	headers, err := ms.parseHeaders(ctx, v)
-	if err != nil {
-		return nil, fmt.Errorf("rest sink headers template decode error: %v", err)
-	}
-	return httpx.Send(ctx.GetLogger(), ms.client, bodyType, method, u, headers, ms.config.SendSingle, decodedData)
-}
-
-func (ms *RestSink) Close(ctx api.StreamContext) error {
-	logger := ctx.GetLogger()
-	logger.Infof("Closing rest sink")
-	return nil
-}
+var _ api.BytesCollector = &RestSink{}

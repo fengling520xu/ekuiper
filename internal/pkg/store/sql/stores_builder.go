@@ -17,8 +17,8 @@ package sql
 import (
 	"fmt"
 
-	"github.com/lf-edge/ekuiper/internal/pkg/store/definition"
-	"github.com/lf-edge/ekuiper/internal/pkg/store/sql/sqlite"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/store/definition"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/store/sql/sqlite"
 )
 
 func BuildStores(c definition.Config, name string) (definition.StoreBuilder, definition.TsBuilder, error) {
@@ -37,4 +37,19 @@ func BuildStores(c definition.Config, name string) (definition.StoreBuilder, def
 	kvBuilder := NewStoreBuilder(d)
 	tsBuilder := NewTsBuilder(d)
 	return kvBuilder, tsBuilder, nil
+}
+
+func BuildSqliteStore(c definition.Config, name string) (Database, error) {
+	db, err := sqlite.NewSqliteDatabase(c, name)
+	if err != nil {
+		return nil, err
+	}
+	if err = db.Connect(); err != nil {
+		return nil, err
+	}
+	d, ok := db.(Database)
+	if !ok {
+		return nil, fmt.Errorf("unrecognized database type")
+	}
+	return d, nil
 }

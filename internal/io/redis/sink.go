@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build redisdb || !core
-
 package redis
 
 import (
@@ -22,12 +20,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/lf-edge/ekuiper/contract/v2/api"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/lf-edge/ekuiper/internal/topo/transform"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/util"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
 type config struct {
@@ -41,14 +39,14 @@ type config struct {
 	// key of field
 	Field string `json:"field,omitempty"`
 	// key define
-	Key          string        `json:"key,omitempty"`
-	KeyType      string        `json:"keyType,omitempty"`
-	DataType     string        `json:"dataType,omitempty"`
-	Expiration   time.Duration `json:"expiration,omitempty"`
-	RowkindField string        `json:"rowkindField"`
-	DataTemplate string        `json:"dataTemplate"`
-	Fields       []string      `json:"fields"`
-	DataField    string        `json:"dataField"`
+	Key          string            `json:"key,omitempty"`
+	KeyType      string            `json:"keyType,omitempty"`
+	DataType     string            `json:"dataType,omitempty"`
+	Expiration   cast.DurationConf `json:"expiration,omitempty"`
+	RowkindField string            `json:"rowkindField"`
+	DataTemplate string            `json:"dataTemplate"`
+	Fields       []string          `json:"fields"`
+	DataField    string            `json:"dataField"`
 }
 
 type RedisSink struct {
@@ -56,11 +54,37 @@ type RedisSink struct {
 	cli *redis.Client
 }
 
-func (r *RedisSink) Configure(props map[string]interface{}) error {
+func (r *RedisSink) Provision(_ api.StreamContext, props map[string]any) error {
+	return r.Validate(props)
+}
+
+func (r *RedisSink) Connect(ctx api.StreamContext, sch api.StatusChangeHandler) error {
+	logger := ctx.GetLogger()
+	logger.Debug("Opening redis sink")
+
+	r.cli = redis.NewClient(&redis.Options{
+		Addr:     r.c.Addr,
+		Username: r.c.Username,
+		Password: r.c.Password,
+		DB:       r.c.Db, // use default DB
+	})
+	_, err := r.cli.Ping(ctx).Result()
+	if err != nil {
+		sch(api.ConnectionDisconnected, err.Error())
+		return err
+	}
+	sch(api.ConnectionConnected, "")
+	return nil
+}
+
+func (r *RedisSink) Validate(props map[string]any) error {
 	c := &config{DataType: "string", Expiration: -1, KeyType: "single"}
 	err := cast.MapToStruct(props, c)
 	if err != nil {
 		return err
+	}
+	if c.Db < 0 || c.Db > 15 {
+		return fmt.Errorf("redisSink db should be in range 0-15")
 	}
 	if c.KeyType == "single" && c.Key == "" && c.Field == "" {
 		return errors.New("redis sink must have key or field when KeyType is single")
@@ -75,60 +99,36 @@ func (r *RedisSink) Configure(props map[string]interface{}) error {
 	return nil
 }
 
-func (r *RedisSink) Open(ctx api.StreamContext) (err error) {
-	logger := ctx.GetLogger()
-	logger.Debug("Opening redis sink")
-
-	r.cli = redis.NewClient(&redis.Options{
+func (r *RedisSink) Ping(ctx api.StreamContext, props map[string]any) error {
+	if err := r.Validate(props); err != nil {
+		return err
+	}
+	cli := redis.NewClient(&redis.Options{
 		Addr:     r.c.Addr,
 		Username: r.c.Username,
 		Password: r.c.Password,
 		DB:       r.c.Db, // use default DB
 	})
-	_, err = r.cli.Ping(ctx).Result()
+	_, err := cli.Ping(ctx).Result()
+	defer func() {
+		cli.Close()
+	}()
 	return err
 }
 
-func (r *RedisSink) Collect(ctx api.StreamContext, data interface{}) error {
-	logger := ctx.GetLogger()
-	var val string
-	if r.c.DataTemplate != "" { // The result is a string
-		v, _, err := ctx.TransformOutput(data)
+func (r *RedisSink) Collect(ctx api.StreamContext, item api.MessageTuple) error {
+	return r.save(ctx, item.ToMap())
+}
+
+func (r *RedisSink) CollectList(ctx api.StreamContext, items api.MessageTupleList) error {
+	// TODO handle partial error
+	items.RangeOfTuples(func(_ int, tuple api.MessageTuple) bool {
+		err := r.save(ctx, tuple.ToMap())
 		if err != nil {
-			logger.Error(err)
-			return err
+			ctx.GetLogger().Error(err)
 		}
-		m := make(map[string]interface{})
-		err = json.Unmarshal(v, &m)
-		if err != nil {
-			return fmt.Errorf("fail to decode data %s after applying dataTemplate for error %v", string(v), err)
-		}
-		data = m
-		val = string(v)
-	} else {
-		m, _, err := transform.TransItem(data, r.c.DataField, r.c.Fields)
-		if err != nil {
-			return fmt.Errorf("fail to select fields %v for data %v", r.c.Fields, data)
-		}
-		data = m
-	}
-	switch d := data.(type) {
-	case []map[string]interface{}:
-		for _, el := range d {
-			err := r.save(ctx, el, val)
-			if err != nil {
-				return err
-			}
-		}
-	case map[string]interface{}:
-		err := r.save(ctx, d, val)
-		if err != nil {
-			return err
-		}
-	default:
-		return fmt.Errorf("unrecognized format of %s", data)
-	}
-	logger.Debug("insert success %v", data)
+		return true
+	})
 	return nil
 }
 
@@ -138,7 +138,7 @@ func (r *RedisSink) Close(ctx api.StreamContext) error {
 	return err
 }
 
-func (r *RedisSink) save(ctx api.StreamContext, data map[string]interface{}, val string) error {
+func (r *RedisSink) save(ctx api.StreamContext, data map[string]any) error {
 	logger := ctx.GetLogger()
 	// prepare key value pairs
 	values := make(map[string]string)
@@ -148,15 +148,12 @@ func (r *RedisSink) save(ctx api.StreamContext, data map[string]interface{}, val
 			values[key] = v
 		}
 	} else {
-		if val == "" {
-			jsonBytes, err := json.Marshal(data)
-			if err != nil {
-				return err
-			}
-			val = string(jsonBytes)
+		jsonBytes, err := json.Marshal(data)
+		if err != nil {
+			return err
 		}
+		val := string(jsonBytes)
 		key := r.c.Key
-		var err error
 		if r.c.Field != "" {
 			keyval, ok := data[r.c.Field]
 			if !ok {
@@ -195,7 +192,7 @@ func (r *RedisSink) save(ctx api.StreamContext, data map[string]interface{}, val
 				}
 				logger.Debugf("push redis list success, key:%s data: %v", key, val)
 			} else {
-				err = r.cli.Set(ctx, key, val, r.c.Expiration*time.Second).Err()
+				err = r.cli.Set(ctx, key, val, time.Duration(r.c.Expiration)).Err()
 				if err != nil {
 					return fmt.Errorf("set %s:%s error, %v", key, val, err)
 				}
@@ -227,3 +224,8 @@ func (r *RedisSink) save(ctx api.StreamContext, data map[string]interface{}, val
 func GetSink() api.Sink {
 	return &RedisSink{}
 }
+
+var (
+	_ api.TupleCollector = &RedisSink{}
+	_ util.PingableConn  = &RedisSink{}
+)

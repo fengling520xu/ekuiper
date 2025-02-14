@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,44 +15,32 @@
 package memory
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/lf-edge/ekuiper/internal/io/memory/pubsub"
-	"github.com/lf-edge/ekuiper/internal/topo/transform"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/io/memory/pubsub"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/timex"
 )
 
 type config struct {
-	Topic        string   `json:"topic"`
-	DataTemplate string   `json:"dataTemplate"`
-	RowkindField string   `json:"rowkindField"`
-	KeyField     string   `json:"keyField"`
-	Fields       []string `json:"fields"`
-	DataField    string   `json:"dataField"`
-	ResendTopic  string   `json:"resendDestination"`
+	Topic        string `json:"topic"`
+	RowkindField string `json:"rowkindField"`
+	KeyField     string `json:"keyField"`
 }
 
 type sink struct {
 	topic        string
-	hasTransform bool
 	keyField     string
 	rowkindField string
-	fields       []string
-	dataField    string
-	resendTopic  string
+	meta         map[string]any
 }
 
-func (s *sink) Open(ctx api.StreamContext) error {
-	ctx.GetLogger().Debugf("Opening memory sink: %v", s.topic)
-	pubsub.CreatePub(s.topic)
-	return nil
-}
-
-func (s *sink) Configure(props map[string]interface{}) error {
+func (s *sink) Provision(_ api.StreamContext, props map[string]any) error {
 	cfg := &config{}
 	err := cast.MapToStruct(props, cfg)
 	if err != nil {
@@ -62,73 +50,105 @@ func (s *sink) Configure(props map[string]interface{}) error {
 		return fmt.Errorf("invalid memory topic %s: wildcard found", cfg.Topic)
 	}
 	s.topic = cfg.Topic
-	if cfg.DataTemplate != "" {
-		s.hasTransform = true
-	}
-	s.dataField = cfg.DataField
-	s.fields = cfg.Fields
 	s.rowkindField = cfg.RowkindField
 	s.keyField = cfg.KeyField
 	if s.rowkindField != "" && s.keyField == "" {
 		return fmt.Errorf("keyField is required when rowkindField is set")
 	}
-	s.resendTopic = cfg.ResendTopic
-	if s.resendTopic == "" {
-		s.resendTopic = s.topic
+	s.meta = map[string]any{
+		"topic": cfg.Topic,
 	}
 	return nil
 }
 
-func (s *sink) collectWithTopic(ctx api.StreamContext, data interface{}, t string) error {
-	topic, err := ctx.ParseTemplate(t, data)
-	if err != nil {
-		return err
+func (s *sink) Connect(ctx api.StreamContext, sch api.StatusChangeHandler) error {
+	ctx.GetLogger().Debugf("Opening memory sink: %v", s.topic)
+	pubsub.CreatePub(s.topic)
+	sch(api.ConnectionConnected, "")
+	return nil
+}
+
+func (s *sink) Collect(ctx api.StreamContext, data api.MessageTuple) error {
+	topic := s.topic
+	if dp, ok := data.(api.HasDynamicProps); ok {
+		temp, transformed := dp.DynamicProps(topic)
+		if transformed {
+			topic = temp
+		}
 	}
-	if s.hasTransform {
-		jsonBytes, _, err := ctx.TransformOutput(data)
+	ctx.GetLogger().Debugf("publishing to topic %s", topic)
+	var spanCtx api.StreamContext
+	if dt, ok := data.(xsql.HasTracerCtx); ok {
+		spanCtx = dt.GetTracerCtx()
+	}
+	var (
+		t   pubsub.MemTuple = &xsql.Tuple{Message: data.ToMap(), Metadata: s.meta, Timestamp: timex.GetNow(), Ctx: spanCtx}
+		err error
+	)
+	if s.rowkindField != "" {
+		t, err = s.wrapUpdatable(t)
 		if err != nil {
 			return err
 		}
-		m := make(map[string]interface{})
-		err = json.Unmarshal(jsonBytes, &m)
-		if err != nil {
-			return fmt.Errorf("fail to decode data %s after applying dataTemplate for error %v", string(jsonBytes), err)
-		}
-		data = m
-	} else {
-		m, _, err := transform.TransItem(data, s.dataField, s.fields)
-		if err != nil {
-			return fmt.Errorf("fail to select fields %v for data %v", s.fields, data)
-		}
-		data = m
 	}
-	switch d := data.(type) {
-	case []map[string]interface{}:
-		for _, el := range d {
-			err := s.publish(ctx, topic, el)
-			if err != nil {
-				return fmt.Errorf("fail to publish data %v for error %v", d, err)
-			}
-		}
-	case map[string]interface{}:
-		err := s.publish(ctx, topic, d)
-		if err != nil {
-			return fmt.Errorf("fail to publish data %v for error %v", d, err)
-		}
-	default:
-		return fmt.Errorf("unrecognized format of %s", data)
-	}
+	pubsub.Produce(ctx, topic, t)
 	return nil
 }
 
-func (s *sink) Collect(ctx api.StreamContext, data interface{}) error {
-	ctx.GetLogger().Debugf("receive %+v", data)
-	return s.collectWithTopic(ctx, data, s.topic)
+func (s *sink) wrapUpdatable(el pubsub.MemTuple) (pubsub.MemTuple, error) {
+	c, ok := el.Value(s.rowkindField, "")
+	var rowkind string
+	if !ok {
+		rowkind = ast.RowkindUpsert
+	} else {
+		rowkind, ok = c.(string)
+		if !ok {
+			return nil, fmt.Errorf("rowkind field %s is not a string in data %v", s.rowkindField, el)
+		}
+		if rowkind != ast.RowkindInsert && rowkind != ast.RowkindUpdate && rowkind != ast.RowkindDelete && rowkind != ast.RowkindUpsert {
+			return nil, fmt.Errorf("invalid rowkind %s", rowkind)
+		}
+	}
+	key, ok := el.Value(s.keyField, "")
+	if !ok {
+		return nil, fmt.Errorf("key field %s not found in data %v", s.keyField, el.ToMap())
+	}
+	return &pubsub.UpdatableTuple{
+		MemTuple: el,
+		Rowkind:  rowkind,
+		Keyval:   key,
+	}, nil
 }
 
-func (s *sink) CollectResend(ctx api.StreamContext, data interface{}) error {
-	ctx.GetLogger().Debugf("resend %+v", data)
-	return s.collectWithTopic(ctx, data, s.resendTopic)
+func (s *sink) CollectList(ctx api.StreamContext, tuples api.MessageTupleList) error {
+	topic := s.topic
+	var spanCtx api.StreamContext
+	if dt, ok := tuples.(xsql.HasTracerCtx); ok {
+		spanCtx = dt.GetTracerCtx()
+	}
+	if dp, ok := tuples.(api.HasDynamicProps); ok {
+		temp, transformed := dp.DynamicProps(topic)
+		if transformed {
+			topic = temp
+		}
+	}
+	result := make([]pubsub.MemTuple, tuples.Len())
+	tuples.RangeOfTuples(func(index int, tuple api.MessageTuple) bool {
+		t := &xsql.Tuple{Message: tuple.ToMap(), Metadata: s.meta, Timestamp: timex.GetNow(), Ctx: spanCtx}
+		if s.rowkindField != "" {
+			st, err := s.wrapUpdatable(t)
+			if err != nil {
+				ctx.GetLogger().Errorf("cannot convert %v to updatable %v", t, err)
+			} else {
+				result[index] = st
+				return true
+			}
+		}
+		result[index] = t
+		return true
+	})
+	pubsub.ProduceList(ctx, topic, result)
+	return nil
 }
 
 func (s *sink) Close(ctx api.StreamContext) error {
@@ -137,28 +157,6 @@ func (s *sink) Close(ctx api.StreamContext) error {
 	return nil
 }
 
-func (s *sink) publish(ctx api.StreamContext, topic string, el map[string]interface{}) error {
-	if s.rowkindField != "" {
-		c, ok := el[s.rowkindField]
-		var rowkind string
-		if !ok {
-			rowkind = ast.RowkindUpsert
-		} else {
-			rowkind, ok = c.(string)
-			if !ok {
-				return fmt.Errorf("rowkind field %s is not a string in data %v", s.rowkindField, el)
-			}
-			if rowkind != ast.RowkindInsert && rowkind != ast.RowkindUpdate && rowkind != ast.RowkindDelete && rowkind != ast.RowkindUpsert {
-				return fmt.Errorf("invalid rowkind %s", rowkind)
-			}
-		}
-		key, ok := el[s.keyField]
-		if !ok {
-			return fmt.Errorf("key field %s not found in data %v", s.keyField, el)
-		}
-		pubsub.ProduceUpdatable(ctx, topic, el, rowkind, key)
-	} else {
-		pubsub.Produce(ctx, topic, el)
-	}
-	return nil
+func GetSink() api.TupleCollector {
+	return &sink{}
 }

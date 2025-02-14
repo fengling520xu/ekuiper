@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,39 +17,48 @@ package planner
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gdexlab/go-render/render"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/lf-edge/ekuiper/internal/pkg/store"
-	"github.com/lf-edge/ekuiper/internal/testx"
-	"github.com/lf-edge/ekuiper/internal/topo/node"
-	"github.com/lf-edge/ekuiper/internal/xsql"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/io/mqtt"
+	"github.com/lf-edge/ekuiper/v2/internal/meta"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/store"
+	"github.com/lf-edge/ekuiper/v2/internal/testx"
+	"github.com/lf-edge/ekuiper/v2/internal/topo"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/node"
+	nodeConf "github.com/lf-edge/ekuiper/v2/internal/topo/node/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
 func init() {
-	testx.InitEnv()
+	testx.InitEnv("planner")
 }
 
-var defaultOption = &api.RuleOption{
+var defaultOption = &def.RuleOption{
 	IsEventTime:        false,
-	LateTol:            1000,
+	LateTol:            cast.DurationConf(time.Second),
 	Concurrency:        1,
 	BufferLength:       1024,
 	SendMetaToSink:     false,
 	SendError:          true,
-	Qos:                api.AtMostOnce,
-	CheckpointInterval: 300000,
-	Restart: &api.RestartStrategy{
+	Qos:                def.AtMostOnce,
+	CheckpointInterval: cast.DurationConf(5 * time.Minute),
+	RestartStrategy: &def.RestartStrategy{
 		Attempts:     0,
-		Delay:        1000,
+		Delay:        cast.DurationConf(time.Second),
 		Multiplier:   2,
-		MaxDelay:     30000,
+		MaxDelay:     cast.DurationConf(30 * time.Second),
 		JitterFactor: 0.1,
 	},
 }
@@ -77,10 +86,16 @@ func Test_createLogicalPlan(t *testing.T) {
 					value STRING,
 					hum BIGINT
 				) WITH (TYPE="file");`,
+		"src3": `CREATE STREAM src3 (
+					a struct(b struct(c bigint,d bigint),e bigint),
+					a1 struct(b struct(c bigint,d bigint),e bigint),
+                    a2 bigint
+				) WITH (DATASOURCE="src1", FORMAT="json", KEY="ts");`,
 	}
 	types := map[string]ast.StreamType{
 		"src1":           ast.TypeStream,
 		"src2":           ast.TypeStream,
+		"src3":           ast.TypeStream,
 		"tableInPlanner": ast.TypeTable,
 	}
 	for name, sql := range streamSqls {
@@ -135,11 +150,107 @@ func Test_createLogicalPlan(t *testing.T) {
 	}
 	tableHumRef.SetRefSource([]string{"tableInPlanner"})
 
+	arrowCRef := &ast.AliasRef{
+		Expression: &ast.BinaryExpr{
+			OP: ast.ARROW,
+			LHS: &ast.BinaryExpr{
+				OP: ast.ARROW,
+				LHS: &ast.FieldRef{
+					StreamName: "src3",
+					Name:       "a",
+				},
+				RHS: &ast.JsonFieldRef{
+					Name: "b",
+				},
+			},
+			RHS: &ast.JsonFieldRef{
+				Name: "c",
+			},
+		},
+	}
+	arrowCRef.SetRefSource([]string{"src3"})
+	arrowPRef := &ast.AliasRef{
+		Expression: &ast.BinaryExpr{
+			OP: ast.ARROW,
+			LHS: &ast.FieldRef{
+				StreamName: "src3",
+				Name:       "a",
+			},
+			RHS: &ast.JsonFieldRef{
+				Name: "e",
+			},
+		},
+	}
+	arrowPRef.SetRefSource([]string{"src3"})
 	tests := []struct {
 		sql string
 		p   LogicalPlan
 		err string
 	}{
+		{
+			sql: "select a.b.c as c, a.e as e, a2 from src3",
+			p: ProjectPlan{
+				baseLogicalPlan: baseLogicalPlan{
+					children: []LogicalPlan{
+						DataSourcePlan{
+							baseLogicalPlan: baseLogicalPlan{},
+							name:            "src3",
+							streamFields: map[string]*ast.JsonStreamField{
+								"a": {
+									Type: "struct",
+									Properties: map[string]*ast.JsonStreamField{
+										"b": {
+											Type: "struct",
+											Properties: map[string]*ast.JsonStreamField{
+												"c": {
+													Type: "bigint",
+												},
+											},
+										},
+										"e": {
+											Type: "bigint",
+										},
+									},
+								},
+								"a2": {
+									Type: "bigint",
+								},
+							},
+							streamStmt:  streams["src3"],
+							metaFields:  []string{},
+							pruneFields: []string{},
+						}.Init(),
+					},
+				},
+				fields: []ast.Field{
+					{
+						Name:  "",
+						AName: "c",
+						Expr: &ast.FieldRef{
+							StreamName: ast.AliasStream,
+							Name:       "c",
+							AliasRef:   arrowCRef,
+						},
+					},
+					{
+						Name:  "e",
+						AName: "e",
+						Expr: &ast.FieldRef{
+							StreamName: ast.AliasStream,
+							Name:       "e",
+							AliasRef:   arrowPRef,
+						},
+					},
+					{
+						Name: "a2",
+						Expr: &ast.FieldRef{
+							StreamName: "src3",
+							Name:       "a2",
+						},
+					},
+				},
+			}.Init(),
+		},
 		{
 			sql: "select src2.hum as hum, tableInPlanner.hum as hum2 from src2 left join tableInPlanner on src2.hum = tableInPlanner.hum",
 			p: ProjectPlan{
@@ -178,6 +289,7 @@ func Test_createLogicalPlan(t *testing.T) {
 											},
 										},
 										Emitters: []string{"tableInPlanner"},
+										Sizes:    []int{MaxRetainSize},
 									}.Init(),
 								},
 							},
@@ -221,120 +333,6 @@ func Test_createLogicalPlan(t *testing.T) {
 							AliasRef:   tableHumRef,
 						},
 					},
-				},
-			}.Init(),
-		},
-		{
-			sql: "select name, row_number() as index from src1",
-			p: ProjectPlan{
-				baseLogicalPlan: baseLogicalPlan{
-					children: []LogicalPlan{
-						WindowFuncPlan{
-							baseLogicalPlan: baseLogicalPlan{
-								children: []LogicalPlan{
-									DataSourcePlan{
-										baseLogicalPlan: baseLogicalPlan{},
-										name:            "src1",
-										streamFields: map[string]*ast.JsonStreamField{
-											"name": {
-												Type: "string",
-											},
-										},
-										streamStmt:  streams["src1"],
-										metaFields:  []string{},
-										pruneFields: []string{},
-									}.Init(),
-								},
-							},
-							windowFuncFields: []ast.Field{
-								{
-									Name:  "row_number",
-									AName: "index",
-									Expr: &ast.FieldRef{
-										StreamName: ast.AliasStream,
-										Name:       "index",
-										AliasRef:   ref,
-									},
-								},
-							},
-						}.Init(),
-					},
-				},
-				fields: []ast.Field{
-					{
-						Name:  "row_number",
-						AName: "index",
-						Expr: &ast.FieldRef{
-							StreamName: ast.AliasStream,
-							Name:       "index",
-							AliasRef:   ref,
-						},
-					},
-					{
-						Name: "name",
-						Expr: &ast.FieldRef{
-							StreamName: "src1",
-							Name:       "name",
-						},
-					},
-				},
-				windowFuncNames: map[string]struct{}{
-					"index": {},
-				},
-			}.Init(),
-		},
-		{
-			sql: "select name, row_number() from src1",
-			p: ProjectPlan{
-				baseLogicalPlan: baseLogicalPlan{
-					children: []LogicalPlan{
-						WindowFuncPlan{
-							baseLogicalPlan: baseLogicalPlan{
-								children: []LogicalPlan{
-									DataSourcePlan{
-										baseLogicalPlan: baseLogicalPlan{},
-										name:            "src1",
-										streamFields: map[string]*ast.JsonStreamField{
-											"name": {
-												Type: "string",
-											},
-										},
-										streamStmt:  streams["src1"],
-										metaFields:  []string{},
-										pruneFields: []string{},
-									}.Init(),
-								},
-							},
-							windowFuncFields: []ast.Field{
-								{
-									Name: "row_number",
-									Expr: &ast.Call{
-										Name:     "row_number",
-										FuncType: ast.FuncTypeWindow,
-									},
-								},
-							},
-						}.Init(),
-					},
-				},
-				fields: []ast.Field{
-					{
-						Name: "name",
-						Expr: &ast.FieldRef{
-							StreamName: "src1",
-							Name:       "name",
-						},
-					},
-					{
-						Name: "row_number",
-						Expr: &ast.Call{
-							Name:     "row_number",
-							FuncType: ast.FuncTypeWindow,
-						},
-					},
-				},
-				windowFuncNames: map[string]struct{}{
-					"row_number": {},
 				},
 			}.Init(),
 		},
@@ -788,83 +786,6 @@ func Test_createLogicalPlan(t *testing.T) {
 				sendMeta:    false,
 			}.Init(),
 		},
-		{ // 4. do not optimize count window
-			sql: `SELECT * FROM src1 WHERE temp > 20 GROUP BY COUNTWINDOW(5,1) HAVING COUNT(*) > 2`,
-			p: ProjectPlan{
-				baseLogicalPlan: baseLogicalPlan{
-					children: []LogicalPlan{
-						HavingPlan{
-							baseLogicalPlan: baseLogicalPlan{
-								children: []LogicalPlan{
-									FilterPlan{
-										baseLogicalPlan: baseLogicalPlan{
-											children: []LogicalPlan{
-												WindowPlan{
-													baseLogicalPlan: baseLogicalPlan{
-														children: []LogicalPlan{
-															DataSourcePlan{
-																name:       "src1",
-																isWildCard: true,
-																streamFields: map[string]*ast.JsonStreamField{
-																	"id1": {
-																		Type: "bigint",
-																	},
-																	"temp": {
-																		Type: "bigint",
-																	},
-																	"name": {
-																		Type: "string",
-																	},
-																	"myarray": {
-																		Type: "array",
-																		Items: &ast.JsonStreamField{
-																			Type: "string",
-																		},
-																	},
-																},
-																streamStmt:  streams["src1"],
-																metaFields:  []string{},
-																pruneFields: []string{},
-															}.Init(),
-														},
-													},
-													condition: nil,
-													wtype:     ast.COUNT_WINDOW,
-													length:    5,
-													interval:  1,
-													limit:     0,
-												}.Init(),
-											},
-										},
-										condition: &ast.BinaryExpr{
-											LHS: &ast.FieldRef{Name: "temp", StreamName: "src1"},
-											OP:  ast.GT,
-											RHS: &ast.IntegerLiteral{Val: 20},
-										},
-									}.Init(),
-								},
-							},
-							condition: &ast.BinaryExpr{
-								LHS: &ast.Call{Name: "count", FuncId: 0, Args: []ast.Expr{&ast.Wildcard{
-									Token: ast.ASTERISK,
-								}}, FuncType: ast.FuncTypeAgg},
-								OP:  ast.GT,
-								RHS: &ast.IntegerLiteral{Val: 2},
-							},
-						}.Init(),
-					},
-				},
-				fields: []ast.Field{
-					{
-						Expr:  &ast.Wildcard{Token: ast.ASTERISK},
-						Name:  "*",
-						AName: "",
-					},
-				},
-				isAggregate: false,
-				sendMeta:    false,
-			}.Init(),
-		},
 		{ // 5. optimize join on
 			sql: `SELECT id1 FROM src1 INNER JOIN src2 on src1.id1 = src2.id2 and src1.temp > 20 and src2.hum < 60 WHERE src1.id1 > 111 GROUP BY TUMBLINGWINDOW(ss, 10)`,
 			p: ProjectPlan{
@@ -1148,6 +1069,7 @@ func Test_createLogicalPlan(t *testing.T) {
 											},
 										},
 										Emitters: []string{"tableInPlanner"},
+										Sizes:    []int{MaxRetainSize},
 									}.Init(),
 								},
 							},
@@ -1242,6 +1164,7 @@ func Test_createLogicalPlan(t *testing.T) {
 											},
 										},
 										Emitters: []string{"tableInPlanner"},
+										Sizes:    []int{MaxRetainSize},
 									}.Init(),
 								},
 							},
@@ -1417,6 +1340,7 @@ func Test_createLogicalPlan(t *testing.T) {
 											},
 										},
 										Emitters: []string{"tableInPlanner"},
+										Sizes:    []int{MaxRetainSize},
 									}.Init(),
 								},
 							},
@@ -1705,7 +1629,7 @@ func Test_createLogicalPlan(t *testing.T) {
 			}.Init(),
 		},
 		{ // 15 analytic function over partition plan
-			sql: `SELECT latest(lag(name)) OVER (PARTITION BY temp), id1 FROM src1 WHERE lag(temp) > temp`,
+			sql: `SELECT latest(lag(name)) OVER (PARTITION BY temp), id1 FROM src1 WHERE latest(lag(temp)) > temp`,
 			p: ProjectPlan{
 				baseLogicalPlan: baseLogicalPlan{
 					children: []LogicalPlan{
@@ -1744,6 +1668,21 @@ func Test_createLogicalPlan(t *testing.T) {
 													StreamName: "src1",
 												}},
 											},
+											{
+												Name:        "latest",
+												FuncId:      3,
+												CachedField: "$$a_latest_3",
+												Args: []ast.Expr{&ast.Call{
+													Name:        "lag",
+													FuncId:      2,
+													CachedField: "$$a_lag_2",
+													Cached:      true,
+													Args: []ast.Expr{&ast.FieldRef{
+														Name:       "temp",
+														StreamName: "src1",
+													}},
+												}},
+											},
 										},
 										fieldFuncs: []*ast.Call{
 											{
@@ -1758,14 +1697,20 @@ func Test_createLogicalPlan(t *testing.T) {
 							},
 							condition: &ast.BinaryExpr{
 								LHS: &ast.Call{
-									Name:   "lag",
-									FuncId: 2,
-									Args: []ast.Expr{&ast.FieldRef{
-										Name:       "temp",
-										StreamName: "src1",
-									}},
-									CachedField: "$$a_lag_2",
+									Name:        "latest",
+									FuncId:      3,
+									CachedField: "$$a_latest_3",
 									Cached:      true,
+									Args: []ast.Expr{&ast.Call{
+										Name:        "lag",
+										FuncId:      2,
+										CachedField: "$$a_lag_2",
+										Args: []ast.Expr{&ast.FieldRef{
+											Name:       "temp",
+											StreamName: "src1",
+										}},
+										Cached: true,
+									}},
 								},
 								OP: ast.GT,
 								RHS: &ast.FieldRef{
@@ -2190,7 +2135,7 @@ func Test_createLogicalPlan(t *testing.T) {
 							},
 							streamStmt:  streams["src1"],
 							metaFields:  []string{"device"},
-							isWildCard:  false,
+							isWildCard:  true,
 							pruneFields: []string{"id1", "name"},
 						}.Init(),
 					},
@@ -2242,7 +2187,7 @@ func Test_createLogicalPlan(t *testing.T) {
 							},
 							streamStmt:  streams["src1"],
 							metaFields:  []string{"device"},
-							isWildCard:  false,
+							isWildCard:  true,
 							pruneFields: []string{"id1", "name"},
 						}.Init(),
 					},
@@ -2320,7 +2265,7 @@ func Test_createLogicalPlan(t *testing.T) {
 										},
 										streamStmt:  streams["src1"],
 										metaFields:  []string{},
-										isWildCard:  false,
+										isWildCard:  true,
 										pruneFields: []string{"id1", "name"},
 									}.Init(),
 								},
@@ -2378,7 +2323,7 @@ func Test_createLogicalPlan(t *testing.T) {
 										},
 										streamStmt:  streams["src1"],
 										metaFields:  []string{},
-										isWildCard:  false,
+										isWildCard:  true,
 										pruneFields: []string{"id1", "name"},
 									}.Init(),
 								},
@@ -2465,7 +2410,7 @@ func Test_createLogicalPlan(t *testing.T) {
 													},
 													streamStmt:  streams["src1"],
 													metaFields:  []string{},
-													isWildCard:  false,
+													isWildCard:  true,
 													pruneFields: []string{"id1", "name"},
 												}.Init(),
 											},
@@ -2538,7 +2483,7 @@ func Test_createLogicalPlan(t *testing.T) {
 													},
 													streamStmt:  streams["src1"],
 													metaFields:  []string{},
-													isWildCard:  false,
+													isWildCard:  true,
 													pruneFields: []string{"id1", "name"},
 												}.Init(),
 											},
@@ -2610,27 +2555,28 @@ func Test_createLogicalPlan(t *testing.T) {
 	}
 	fmt.Printf("The test bucket size is %d.\n\n", len(tests))
 
-	for i, tt := range tests {
-		stmt, err := xsql.NewParser(strings.NewReader(tt.sql)).Parse()
-		if err != nil {
-			t.Errorf("%d. %q: error compile sql: %s\n", i, tt.sql, err)
-			continue
-		}
-		p, err := createLogicalPlan(stmt, &api.RuleOption{
-			IsEventTime:        false,
-			LateTol:            0,
-			Concurrency:        0,
-			BufferLength:       0,
-			SendMetaToSink:     false,
-			Qos:                0,
-			CheckpointInterval: 0,
-			SendError:          true,
-		}, kv)
-		if !reflect.DeepEqual(tt.err, testx.Errstring(err)) {
-			t.Errorf("%d. %q: error mismatch:\n  exp=%s\n  got=%s\n\n", i, tt.sql, tt.err, err)
-		} else {
-			assert.Equal(t, tt.p, p, "plan mismatch")
-		}
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			stmt, err := xsql.NewParser(strings.NewReader(tt.sql)).Parse()
+			if !assert.NoError(t, err) {
+				return
+			}
+			p, err := createLogicalPlan(stmt, &def.RuleOption{
+				IsEventTime:        false,
+				LateTol:            0,
+				Concurrency:        0,
+				BufferLength:       0,
+				SendMetaToSink:     false,
+				Qos:                0,
+				CheckpointInterval: 0,
+				SendError:          true,
+			}, kv)
+			if tt.err != "" {
+				assert.EqualError(t, err, tt.err)
+			} else {
+				assert.Equal(t, tt.p, p)
+			}
+		})
 	}
 }
 
@@ -2917,68 +2863,6 @@ func Test_createLogicalPlanSchemaless(t *testing.T) {
 				sendMeta:    false,
 			}.Init(),
 		},
-		{ // 4. do not optimize count window
-			sql: `SELECT * FROM src1 WHERE temp > 20 GROUP BY COUNTWINDOW(5,1) HAVING COUNT(*) > 2`,
-			p: ProjectPlan{
-				baseLogicalPlan: baseLogicalPlan{
-					children: []LogicalPlan{
-						HavingPlan{
-							baseLogicalPlan: baseLogicalPlan{
-								children: []LogicalPlan{
-									FilterPlan{
-										baseLogicalPlan: baseLogicalPlan{
-											children: []LogicalPlan{
-												WindowPlan{
-													baseLogicalPlan: baseLogicalPlan{
-														children: []LogicalPlan{
-															DataSourcePlan{
-																name:         "src1",
-																isWildCard:   true,
-																streamFields: map[string]*ast.JsonStreamField{},
-																streamStmt:   streams["src1"],
-																metaFields:   []string{},
-																isSchemaless: true,
-																pruneFields:  []string{},
-															}.Init(),
-														},
-													},
-													condition: nil,
-													wtype:     ast.COUNT_WINDOW,
-													length:    5,
-													interval:  1,
-													limit:     0,
-												}.Init(),
-											},
-										},
-										condition: &ast.BinaryExpr{
-											LHS: &ast.FieldRef{Name: "temp", StreamName: "src1"},
-											OP:  ast.GT,
-											RHS: &ast.IntegerLiteral{Val: 20},
-										},
-									}.Init(),
-								},
-							},
-							condition: &ast.BinaryExpr{
-								LHS: &ast.Call{Name: "count", FuncId: 0, Args: []ast.Expr{&ast.Wildcard{
-									Token: ast.ASTERISK,
-								}}, FuncType: ast.FuncTypeAgg},
-								OP:  ast.GT,
-								RHS: &ast.IntegerLiteral{Val: 2},
-							},
-						}.Init(),
-					},
-				},
-				fields: []ast.Field{
-					{
-						Expr:  &ast.Wildcard{Token: ast.ASTERISK},
-						Name:  "*",
-						AName: "",
-					},
-				},
-				isAggregate: false,
-				sendMeta:    false,
-			}.Init(),
-		},
 		{ // 5. optimize join on
 			sql: `SELECT id1 FROM src1 INNER JOIN src2 on src1.id1 = src2.id2 and src1.temp > 20 and src2.hum < 60 WHERE src1.id1 > 111 GROUP BY TUMBLINGWINDOW(ss, 10)`,
 			p: ProjectPlan{
@@ -3248,6 +3132,7 @@ func Test_createLogicalPlanSchemaless(t *testing.T) {
 											},
 										},
 										Emitters: []string{"tableInPlanner"},
+										Sizes:    []int{MaxRetainSize},
 									}.Init(),
 								},
 							},
@@ -3339,6 +3224,7 @@ func Test_createLogicalPlanSchemaless(t *testing.T) {
 											},
 										},
 										Emitters: []string{"tableInPlanner"},
+										Sizes:    []int{MaxRetainSize},
 									}.Init(),
 								},
 							},
@@ -3508,6 +3394,7 @@ func Test_createLogicalPlanSchemaless(t *testing.T) {
 											},
 										},
 										Emitters: []string{"tableInPlanner"},
+										Sizes:    []int{MaxRetainSize},
 									}.Init(),
 								},
 							},
@@ -3630,10 +3517,10 @@ func Test_createLogicalPlanSchemaless(t *testing.T) {
 						DataSourcePlan{
 							baseLogicalPlan: baseLogicalPlan{},
 							name:            "src1",
-							streamFields:    map[string]*ast.JsonStreamField{},
+							streamFields:    nil,
 							streamStmt:      streams["src1"],
 							metaFields:      []string{"device"},
-							isWildCard:      false,
+							isWildCard:      true,
 							pruneFields:     []string{"id1", "name"},
 							isSchemaless:    true,
 						}.Init(),
@@ -3673,10 +3560,10 @@ func Test_createLogicalPlanSchemaless(t *testing.T) {
 						DataSourcePlan{
 							baseLogicalPlan: baseLogicalPlan{},
 							name:            "src1",
-							streamFields:    map[string]*ast.JsonStreamField{},
+							streamFields:    nil,
 							streamStmt:      streams["src1"],
 							metaFields:      []string{"device"},
-							isWildCard:      false,
+							isWildCard:      true,
 							pruneFields:     []string{"id1", "name"},
 							isSchemaless:    true,
 						}.Init(),
@@ -3742,10 +3629,10 @@ func Test_createLogicalPlanSchemaless(t *testing.T) {
 									DataSourcePlan{
 										baseLogicalPlan: baseLogicalPlan{},
 										name:            "src1",
-										streamFields:    map[string]*ast.JsonStreamField{},
+										streamFields:    nil,
 										streamStmt:      streams["src1"],
 										metaFields:      []string{},
-										isWildCard:      false,
+										isWildCard:      true,
 										pruneFields:     []string{"id1", "name"},
 										isSchemaless:    true,
 									}.Init(),
@@ -3791,10 +3678,10 @@ func Test_createLogicalPlanSchemaless(t *testing.T) {
 									DataSourcePlan{
 										baseLogicalPlan: baseLogicalPlan{},
 										name:            "src1",
-										streamFields:    map[string]*ast.JsonStreamField{},
+										streamFields:    nil,
 										streamStmt:      streams["src1"],
 										metaFields:      []string{},
-										isWildCard:      false,
+										isWildCard:      true,
 										pruneFields:     []string{"id1", "name"},
 										isSchemaless:    true,
 									}.Init(),
@@ -3866,12 +3753,14 @@ func Test_createLogicalPlanSchemaless(t *testing.T) {
 												DataSourcePlan{
 													baseLogicalPlan: baseLogicalPlan{},
 													name:            "src1",
-													streamFields:    map[string]*ast.JsonStreamField{},
-													streamStmt:      streams["src1"],
-													metaFields:      []string{},
-													isWildCard:      false,
-													pruneFields:     []string{"id1", "name"},
-													isSchemaless:    true,
+													streamFields: map[string]*ast.JsonStreamField{
+														"id1": nil,
+													},
+													streamStmt:   streams["src1"],
+													metaFields:   []string{},
+													isWildCard:   true,
+													pruneFields:  []string{"id1", "name"},
+													isSchemaless: true,
 												}.Init(),
 											},
 										},
@@ -3930,12 +3819,14 @@ func Test_createLogicalPlanSchemaless(t *testing.T) {
 												DataSourcePlan{
 													baseLogicalPlan: baseLogicalPlan{},
 													name:            "src1",
-													streamFields:    map[string]*ast.JsonStreamField{},
-													streamStmt:      streams["src1"],
-													metaFields:      []string{},
-													isWildCard:      false,
-													pruneFields:     []string{"id1", "name"},
-													isSchemaless:    true,
+													streamFields: map[string]*ast.JsonStreamField{
+														"temp": nil,
+													},
+													streamStmt:   streams["src1"],
+													metaFields:   []string{},
+													isWildCard:   true,
+													pruneFields:  []string{"id1", "name"},
+													isSchemaless: true,
 												}.Init(),
 											},
 										},
@@ -4012,7 +3903,7 @@ func Test_createLogicalPlanSchemaless(t *testing.T) {
 			t.Errorf("%d. %q: error compile sql: %s\n", i, tt.sql, err)
 			continue
 		}
-		p, err := createLogicalPlan(stmt, &api.RuleOption{
+		p, err := createLogicalPlan(stmt, &def.RuleOption{
 			IsEventTime:        false,
 			LateTol:            0,
 			Concurrency:        0,
@@ -4025,7 +3916,7 @@ func Test_createLogicalPlanSchemaless(t *testing.T) {
 		if !reflect.DeepEqual(tt.err, testx.Errstring(err)) {
 			t.Errorf("%d. %q: error mismatch:\n  exp=%s\n  got=%s\n\n", i, tt.sql, tt.err, err)
 		} else if !reflect.DeepEqual(tt.p, p) {
-			t.Errorf("%d. %q\n\nstmt mismatch:\n\nexp=%#v\n\ngot=%#v\n\n", i, tt.sql, render.AsCode(tt.p), render.AsCode(p))
+			t.Errorf("%d. %v\n\nstmt mismatch:\n\nexp=%#v\n\ngot=%#v\n\n", i, tt.sql, render.AsCode(tt.p), render.AsCode(p))
 		}
 	}
 }
@@ -4087,7 +3978,8 @@ func Test_createLogicalPlan4Lookup(t *testing.T) {
 										baseLogicalPlan: baseLogicalPlan{},
 										name:            "src1",
 										streamFields: map[string]*ast.JsonStreamField{
-											"a": nil,
+											"a":  nil,
+											"id": nil,
 										},
 										isSchemaless: true,
 										streamStmt:   streams["src1"],
@@ -4169,7 +4061,9 @@ func Test_createLogicalPlan4Lookup(t *testing.T) {
 																baseLogicalPlan: baseLogicalPlan{},
 																name:            "src1",
 																streamFields: map[string]*ast.JsonStreamField{
-																	"a": nil,
+																	"a":  nil,
+																	"c":  nil,
+																	"id": nil,
 																},
 																isSchemaless: true,
 																streamStmt:   streams["src1"],
@@ -4309,7 +4203,8 @@ func Test_createLogicalPlan4Lookup(t *testing.T) {
 													baseLogicalPlan: baseLogicalPlan{},
 													name:            "src1",
 													streamFields: map[string]*ast.JsonStreamField{
-														"a": nil,
+														"a":  nil,
+														"id": nil,
 													},
 													isSchemaless: true,
 													streamStmt:   streams["src1"],
@@ -4335,7 +4230,7 @@ func Test_createLogicalPlan4Lookup(t *testing.T) {
 											},
 										},
 										keys:   []string{"id"},
-										fields: []string{"b"},
+										fields: []string{"b", "id"},
 										valvars: []ast.Expr{
 											&ast.FieldRef{
 												StreamName: "src1",
@@ -4431,7 +4326,7 @@ func Test_createLogicalPlan4Lookup(t *testing.T) {
 																baseLogicalPlan: baseLogicalPlan{},
 																name:            "src1",
 																streamStmt:      streams["src1"],
-																streamFields:    map[string]*ast.JsonStreamField{},
+																streamFields:    nil,
 																metaFields:      []string{},
 																isWildCard:      true,
 																isSchemaless:    true,
@@ -4520,7 +4415,7 @@ func Test_createLogicalPlan4Lookup(t *testing.T) {
 																baseLogicalPlan: baseLogicalPlan{},
 																name:            "src1",
 																streamStmt:      streams["src1"],
-																streamFields:    map[string]*ast.JsonStreamField{},
+																streamFields:    nil,
 																metaFields:      []string{},
 																isWildCard:      true,
 																isSchemaless:    true,
@@ -4596,7 +4491,7 @@ func Test_createLogicalPlan4Lookup(t *testing.T) {
 		t.Run(tt.sql, func(t *testing.T) {
 			stmt, err := xsql.NewParser(strings.NewReader(tt.sql)).Parse()
 			assert.NoError(t, err)
-			p, err := createLogicalPlan(stmt, &api.RuleOption{
+			p, err := createLogicalPlan(stmt, &def.RuleOption{
 				IsEventTime:        false,
 				LateTol:            0,
 				Concurrency:        0,
@@ -4615,44 +4510,59 @@ func Test_createLogicalPlan4Lookup(t *testing.T) {
 }
 
 func TestTransformSourceNode(t *testing.T) {
+	// add decompression for meta
+	a1 := map[string]interface{}{
+		"decompression": "gzip",
+	}
+	bs, err := json.Marshal(a1)
+	assert.NoError(t, err)
+	meta.InitYamlConfigManager()
+	dataDir, _ := conf.GetDataLoc()
+	err = os.MkdirAll(filepath.Join(dataDir, "sources"), 0o755)
+	assert.NoError(t, err)
+	err = meta.AddSourceConfKey("mqtt", "testCom", "", bs)
+	assert.NoError(t, err)
+	defer func() {
+		err = meta.DelSourceConfKey("mqtt", "testCom", "")
+		assert.NoError(t, err)
+	}()
+	// create expected nodes
 	schema := map[string]*ast.JsonStreamField{
 		"a": {
 			Type: "bigint",
 		},
 	}
+	tp, err := topo.NewWithNameAndOptions("test", &def.RuleOption{SendError: false})
+	assert.NoError(t, err)
+	props := nodeConf.GetSourceConf("mqtt", &ast.Options{TYPE: "mqtt", DATASOURCE: "topic1"})
+	srcNode, err := node.NewSourceNode(tp.GetContext(), "test", &mqtt.SourceConnector{}, props, &def.RuleOption{SendError: false})
+	assert.NoError(t, err)
+	decodeNode, err := node.NewDecodeOp(tp.GetContext(), false, "2_decoder", "test", &def.RuleOption{SendError: false}, schema, nil)
+	assert.NoError(t, err)
+	decomNode, err := node.NewDecompressOp("2_decompressor", &def.RuleOption{SendError: false}, "gzip")
+	assert.NoError(t, err)
+	decodeNode2, err := node.NewDecodeOp(tp.GetContext(), false, "3_decoder", "test", &def.RuleOption{SendError: false}, schema, nil)
+	assert.NoError(t, err)
+	props2 := nodeConf.GetSourceConf("mqtt", &ast.Options{TYPE: "mqtt", CONF_KEY: "testCom", DATASOURCE: "topic2"})
+	srcNode2, err := node.NewSourceNode(tp.GetContext(), "test", &mqtt.SourceConnector{}, props2, &def.RuleOption{SendError: false})
+	assert.NoError(t, err)
+
 	testCases := []struct {
 		name string
 		plan *DataSourcePlan
-		node *node.SourceNode
+		node node.DataSourceNode
+		ops  []node.OperatorNode
 	}{
+		// TODO revert file tests
 		{
-			name: "normal source node",
+			name: "split source node",
 			plan: &DataSourcePlan{
 				name: "test",
 				streamStmt: &ast.StreamStmt{
 					StreamType: ast.TypeStream,
 					Options: &ast.Options{
-						TYPE: "file",
-					},
-				},
-				streamFields: nil,
-				allMeta:      false,
-				metaFields:   []string{},
-				iet:          false,
-				isBinary:     false,
-			},
-			node: node.NewSourceNode("test", ast.TypeStream, nil, &ast.Options{
-				TYPE: "file",
-			}, false, nil),
-		},
-		{
-			name: "schema source node",
-			plan: &DataSourcePlan{
-				name: "test",
-				streamStmt: &ast.StreamStmt{
-					StreamType: ast.TypeStream,
-					Options: &ast.Options{
-						TYPE: "file",
+						TYPE:       "mqtt",
+						DATASOURCE: "topic1",
 					},
 				},
 				streamFields: schema,
@@ -4661,130 +4571,41 @@ func TestTransformSourceNode(t *testing.T) {
 				iet:          false,
 				isBinary:     false,
 			},
-			node: node.NewSourceNode("test", ast.TypeStream, nil, &ast.Options{
-				TYPE: "file",
-			}, false, schema),
+			node: srcNode,
+			ops: []node.OperatorNode{
+				decodeNode,
+			},
+		},
+		{
+			name: "split source node with decompression",
+			plan: &DataSourcePlan{
+				name: "test",
+				streamStmt: &ast.StreamStmt{
+					StreamType: ast.TypeStream,
+					Options: &ast.Options{
+						TYPE:       "mqtt",
+						DATASOURCE: "topic2",
+						CONF_KEY:   "testCom",
+					},
+				},
+				streamFields: schema,
+				allMeta:      false,
+				metaFields:   []string{},
+				iet:          false,
+				isBinary:     false,
+			},
+			node: srcNode2,
+			ops: []node.OperatorNode{
+				decomNode,
+				decodeNode2,
+			},
 		},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			sourceNode, err := transformSourceNode(tc.plan, nil, &api.RuleOption{})
-			if err != nil {
-				t.Errorf("unexpected error: %v", err)
-				return
-			}
-			if !reflect.DeepEqual(sourceNode, tc.node) {
-				t.Errorf("unexpected result: got %v, want %v", sourceNode, tc.node)
-			}
+			_, ops, _, err := transformSourceNode(tp.GetContext(), tc.plan, nil, "test", &def.RuleOption{}, 1)
+			assert.NoError(t, err)
+			assert.Equal(t, len(tc.ops), len(ops))
 		})
-	}
-}
-
-func TestGetLogicalPlanForExplain(t *testing.T) {
-	kv, err := store.GetKV("stream")
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	streamSqls := map[string]string{
-		"src1": `CREATE STREAM src1 (
-					id1 BIGINT,
-					temp BIGINT,
-					name string,
-					myarray array(string)
-				) WITH (DATASOURCE="src1", FORMAT="json", KEY="ts");`,
-		"src2": `CREATE STREAM src2 (
-					id2 BIGINT,
-					hum BIGINT
-				) WITH (DATASOURCE="src2", FORMAT="json", KEY="ts", TIMESTAMP_FORMAT="YYYY-MM-dd HH:mm:ss");`,
-		"tableInPlanner": `CREATE TABLE tableInPlanner (
-					id BIGINT,
-					name STRING,
-					value STRING,
-					hum BIGINT
-				) WITH (TYPE="file");`,
-	}
-	types := map[string]ast.StreamType{
-		"src1":           ast.TypeStream,
-		"src2":           ast.TypeStream,
-		"tableInPlanner": ast.TypeTable,
-	}
-	for name, sql := range streamSqls {
-		s, err := json.Marshal(&xsql.StreamInfo{
-			StreamType: types[name],
-			Statement:  sql,
-		})
-		if err != nil {
-			t.Error(err)
-			t.Fail()
-		}
-		err = kv.Set(name, string(s))
-		if err != nil {
-			t.Error(err)
-			t.Fail()
-		}
-	}
-	streams := make(map[string]*ast.StreamStmt)
-	for n := range streamSqls {
-		streamStmt, err := xsql.GetDataSource(kv, n)
-		if err != nil {
-			t.Errorf("fail to get stream %s, please check if stream is created", n)
-			return
-		}
-		streams[n] = streamStmt
-	}
-
-	ref := &ast.AliasRef{
-		Expression: &ast.Call{
-			Name:     "row_number",
-			FuncType: ast.FuncTypeWindow,
-		},
-	}
-	ref.SetRefSource([]string{})
-
-	tests := []struct {
-		rule *api.Rule
-		res  string
-		err  string
-	}{
-		{
-			rule: &api.Rule{
-				Triggered: false,
-				Id:        "test",
-				Sql:       "select name, row_number() as index from src1",
-				Actions: []map[string]interface{}{
-					{
-						"log": map[string]interface{}{},
-					},
-				},
-				Options: defaultOption,
-			},
-			res: "{\"type\":\"ProjectPlan\",\"info\":\"Fields:[ $$alias.index, src1.name ]\",\"id\":0,\"children\":[1]}\n\n   {\"type\":\"WindowFuncPlan\",\"info\":\"windowFuncFields:[ {name:index, expr:$$alias.index} ]\",\"id\":1,\"children\":[2]}\n\n         {\"type\":\"DataSourcePlan\",\"info\":\"StreamName: src1, StreamFields:[ name ]\",\"id\":2,\"children\":null}\n\n",
-		},
-		{
-			rule: &api.Rule{
-				Triggered: false,
-				Id:        "test",
-				Sql:       "select name, row_number() from src1",
-				Actions: []map[string]interface{}{
-					{
-						"log": map[string]interface{}{},
-					},
-				},
-				Options: defaultOption,
-			},
-			res: "{\"type\":\"ProjectPlan\",\"info\":\"Fields:[ src1.name, Call:{ name:row_number } ]\",\"id\":0,\"children\":[1]}\n\n   {\"type\":\"WindowFuncPlan\",\"info\":\"windowFuncFields:[ {name:row_number, expr:Call:{ name:row_number }} ]\",\"id\":1,\"children\":[2]}\n\n         {\"type\":\"DataSourcePlan\",\"info\":\"StreamName: src1, StreamFields:[ name ]\",\"id\":2,\"children\":null}\n\n",
-		},
-	}
-	fmt.Printf("The test bucket size is %d.\n\n", len(tests))
-
-	for i, tt := range tests {
-		explain, err := GetExplainInfoFromLogicalPlan(tt.rule)
-		if err != nil {
-			t.Errorf(err.Error())
-		}
-		if !reflect.DeepEqual(explain, tt.res) {
-			t.Errorf("case %d: expect validate %v but got %v", i, tt.res, explain)
-		}
 	}
 }

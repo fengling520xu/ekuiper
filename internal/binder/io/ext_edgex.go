@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,11 +17,13 @@
 package io
 
 import (
-	"github.com/lf-edge/ekuiper/internal/io/edgex"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/v2/internal/io/edgex"
+	edgexCon "github.com/lf-edge/ekuiper/v2/internal/io/edgex/client"
+	"github.com/lf-edge/ekuiper/v2/pkg/modules"
 )
 
 func init() {
-	sources["edgex"] = func() api.Source { return &edgex.EdgexSource{} }
-	sinks["edgex"] = func() api.Sink { return &edgex.EdgexMsgBusSink{} }
+	modules.RegisterConnection("edgex", edgexCon.GetConnection)
+	modules.RegisterSource("edgex", edgex.GetSource)
+	modules.RegisterSink("edgex", edgex.GetSink)
 }

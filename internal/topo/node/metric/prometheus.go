@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -11,8 +11,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
-//go:build prometheus || !core
 
 package metric
 
@@ -37,12 +35,14 @@ func GetPrometheusMetrics() *PrometheusMetrics {
 }
 
 type MetricGroup struct {
-	TotalRecordsIn     *prometheus.CounterVec
-	TotalRecordsOut    *prometheus.CounterVec
-	TotalExceptions    *prometheus.CounterVec
-	ProcessLatencyHist *prometheus.HistogramVec
-	ProcessLatency     *prometheus.GaugeVec
-	BufferLength       *prometheus.GaugeVec
+	TotalRecordsIn         *prometheus.CounterVec
+	TotalRecordsOut        *prometheus.CounterVec
+	TotalMessagesProcessed *prometheus.CounterVec
+	TotalExceptions        *prometheus.CounterVec
+	ProcessLatencyHist     *prometheus.HistogramVec
+	ProcessLatency         *prometheus.GaugeVec
+	BufferLength           *prometheus.GaugeVec
+	ConnectionStatus       *prometheus.GaugeVec
 }
 
 type PrometheusMetrics struct {
@@ -51,7 +51,7 @@ type PrometheusMetrics struct {
 
 func newPrometheusMetrics() *PrometheusMetrics {
 	var (
-		labelNames = []string{"rule", "type", "op", "instance"}
+		labelNames = []string{"rule", "type", "op", "op_instance"}
 		prefixes   = []string{"kuiper_source", "kuiper_op", "kuiper_sink"}
 	)
 	var vecs []*MetricGroup
@@ -63,6 +63,10 @@ func newPrometheusMetrics() *PrometheusMetrics {
 		}, labelNames)
 		totalRecordsOut := prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: prefix + "_" + RecordsOutTotal,
+			Help: "Total number of messages published by the operation of " + prefix,
+		}, labelNames)
+		totalMessagesProcessed := prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: prefix + "_" + MessagesProcessedTotal,
 			Help: "Total number of messages published by the operation of " + prefix,
 		}, labelNames)
 		totalExceptions := prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -82,15 +86,26 @@ func newPrometheusMetrics() *PrometheusMetrics {
 			Name: prefix + "_" + BufferLength,
 			Help: "The length of the plan buffer which is shared by all instances of " + prefix,
 		}, labelNames)
-		prometheus.MustRegister(totalRecordsIn, totalRecordsOut, totalExceptions, processLatency, processLatencyHist, bufferLength)
-		vecs = append(vecs, &MetricGroup{
-			TotalRecordsIn:     totalRecordsIn,
-			TotalRecordsOut:    totalRecordsOut,
-			TotalExceptions:    totalExceptions,
-			ProcessLatency:     processLatency,
-			ProcessLatencyHist: processLatencyHist,
-			BufferLength:       bufferLength,
-		})
+		prometheus.MustRegister(totalRecordsIn, totalRecordsOut, totalMessagesProcessed, totalExceptions, processLatency, processLatencyHist, bufferLength)
+		mg := &MetricGroup{
+			TotalRecordsIn:         totalRecordsIn,
+			TotalRecordsOut:        totalRecordsOut,
+			TotalMessagesProcessed: totalMessagesProcessed,
+			TotalExceptions:        totalExceptions,
+			ProcessLatency:         processLatency,
+			ProcessLatencyHist:     processLatencyHist,
+			BufferLength:           bufferLength,
+		}
+		if prefix != "kuiper_op" {
+			connectionStatus := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+				Name: prefix + "_" + ConnectionStatus,
+				Help: "The connection status of the operator. Only meaningful for source/sink nodes. 0 means connecting, 1 means connected and -1 means disconnected " + prefix,
+			}, labelNames)
+			_ = prometheus.Register(connectionStatus)
+			mg.ConnectionStatus = connectionStatus
+		}
+		vecs = append(vecs, mg)
+
 	}
 	return &PrometheusMetrics{vecs: vecs}
 }

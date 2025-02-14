@@ -1,4 +1,4 @@
-// Copyright 2023 EMQ Technologies Co., Ltd.
+// Copyright 2023-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,9 +21,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
 )
 
 var (
@@ -117,6 +118,9 @@ func registerArrayFunc() {
 	builtins["array_contains"] = builtinFunc{
 		fType: ast.FuncTypeScalar,
 		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
+			if args[0] == nil {
+				return false, true
+			}
 			array, ok := args[0].([]interface{})
 			if !ok {
 				return errorArrayFirstArgumentNotArrayError, false
@@ -131,12 +135,13 @@ func registerArrayFunc() {
 		val: func(ctx api.FunctionContext, args []ast.Expr) error {
 			return ValidateLen(2, len(args))
 		},
-		check: returnFalseIfHasAnyNil,
 	}
-
 	builtins["array_remove"] = builtinFunc{
 		fType: ast.FuncTypeScalar,
 		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
+			if args[0] == nil {
+				return nil, true
+			}
 			array, ok := args[0].([]interface{})
 			if !ok {
 				return errorArrayFirstArgumentNotArrayError, false
@@ -155,30 +160,7 @@ func registerArrayFunc() {
 		val: func(ctx api.FunctionContext, args []ast.Expr) error {
 			return ValidateLen(2, len(args))
 		},
-		check: returnNilIfHasAnyNil,
 	}
-	builtins["array_position"] = builtinFunc{
-		fType: ast.FuncTypeScalar,
-		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
-			if args[0] == nil {
-				return -1, true
-			}
-			array, ok := args[0].([]interface{})
-			if !ok {
-				return errorArrayFirstArgumentNotArrayError, false
-			}
-			for i, item := range array {
-				if item == args[1] {
-					return i, true
-				}
-			}
-			return -1, true
-		},
-		val: func(ctx api.FunctionContext, args []ast.Expr) error {
-			return ValidateLen(2, len(args))
-		},
-	}
-
 	builtins["array_last_position"] = builtinFunc{
 		fType: ast.FuncTypeScalar,
 		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
@@ -202,10 +184,12 @@ func registerArrayFunc() {
 			return ValidateLen(2, len(args))
 		},
 	}
-
 	builtins["array_contains_any"] = builtinFunc{
 		fType: ast.FuncTypeScalar,
 		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
+			if args[0] == nil {
+				return false, true
+			}
 			array1, ok1 := args[0].([]interface{})
 			if !ok1 {
 				return errorArrayFirstArgumentNotArrayError, false
@@ -228,9 +212,7 @@ func registerArrayFunc() {
 		val: func(ctx api.FunctionContext, args []ast.Expr) error {
 			return ValidateLen(2, len(args))
 		},
-		check: returnFalseIfHasAnyNil,
 	}
-
 	builtins["array_intersect"] = builtinFunc{
 		fType: ast.FuncTypeScalar,
 		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
@@ -269,7 +251,6 @@ func registerArrayFunc() {
 		},
 		check: returnNilIfHasAnyNil,
 	}
-
 	builtins["array_union"] = builtinFunc{
 		fType: ast.FuncTypeScalar,
 		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
@@ -340,13 +321,20 @@ func registerArrayFunc() {
 	builtins["array_except"] = builtinFunc{
 		fType: ast.FuncTypeScalar,
 		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
+			if args[0] == nil {
+				return nil, true
+			}
 			array1, ok1 := args[0].([]interface{})
 			if !ok1 {
 				return errorArrayFirstArgumentNotArrayError, false
 			}
-			array2, ok2 := args[1].([]interface{})
-			if !ok2 {
-				return errorArraySecondArgumentNotArrayError, false
+			var array2 []interface{}
+			if args[1] != nil {
+				var ok2 bool
+				array2, ok2 = args[1].([]interface{})
+				if !ok2 {
+					return errorArraySecondArgumentNotArrayError, false
+				}
 			}
 			except := make([]interface{}, 0, len(array1))
 			set := make(map[interface{}]bool)
@@ -367,15 +355,11 @@ func registerArrayFunc() {
 		val: func(ctx api.FunctionContext, args []ast.Expr) error {
 			return ValidateLen(2, len(args))
 		},
-		check: returnNilIfHasAnyNil,
 	}
 	builtins["repeat"] = builtinFunc{
 		fType: ast.FuncTypeScalar,
 		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
-			elemt, ok := args[0].(interface{})
-			if !ok {
-				return errorArrayFirstArgumentNotArrayError, false
-			}
+			elemt := args[0]
 			count, ok := args[1].(int)
 			if !ok {
 				return errorArraySecondArgumentNotIntError, false
@@ -499,7 +483,8 @@ func registerArrayFunc() {
 					uint, uint8, uint16, uint32, uint64,
 					float32, float64,
 					string,
-					bool:
+					bool,
+					nil:
 					if !set[val] {
 						output = append(output, val)
 						set[val] = true
@@ -543,7 +528,7 @@ func registerArrayFunc() {
 				}
 				eargs := make([]ast.Expr, len(params))
 				if err := fs.val(nil, eargs); err != nil {
-					return fmt.Errorf("validate function arguments failed."), false
+					return fmt.Errorf("validate %s arguments failed", funcName), false
 				}
 
 				result, ok = fs.exec(ctx, params)
@@ -670,6 +655,9 @@ func registerArrayFunc() {
 			var res []interface{}
 
 			for _, arg := range args {
+				if arg == nil {
+					continue
+				}
 				v := reflect.ValueOf(arg)
 
 				switch v.Kind() {
@@ -686,6 +674,35 @@ func registerArrayFunc() {
 		val: func(ctx api.FunctionContext, args []ast.Expr) error {
 			return ValidateAtLeast(1, len(args))
 		},
+	}
+	builtins["kvpair_array_to_obj"] = builtinFunc{
+		fType: ast.FuncTypeScalar,
+		exec: func(ctx api.FunctionContext, args []interface{}) (interface{}, bool) {
+			arr, ok := args[0].([]interface{})
+			if !ok {
+				return errorArrayFirstArgumentNotArrayError, false
+			}
+
+			obj := make(map[string]interface{}, len(arr))
+			for _, item := range arr {
+				pair, ok := item.(map[string]interface{})
+				if !ok {
+					return fmt.Errorf("array item should be map[string]interface{}"), false
+				}
+
+				length := len(pair)
+				k, kExist := pair[kvPairKName]
+				v, vExist := pair[kvPairVName]
+				kInStr, ok := k.(string)
+
+				if length != 2 || !kExist || !vExist || !ok {
+					return fmt.Errorf("array item should be key-value pair"), false
+				}
+				obj[kInStr] = v
+			}
+			return obj, true
+		},
+		val:   ValidateOneArg,
 		check: returnNilIfHasAnyNil,
 	}
 }

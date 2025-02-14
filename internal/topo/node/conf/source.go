@@ -1,4 +1,4 @@
-// Copyright 2022 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,10 +17,12 @@ package conf
 import (
 	"strings"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/connection"
 )
 
+// GetSourceConf unifies all properties set in different locations
 func GetSourceConf(sourceType string, options *ast.Options) map[string]interface{} {
 	confkey := options.CONF_KEY
 
@@ -39,27 +41,51 @@ func GetSourceConf(sourceType string, options *ast.Options) map[string]interface
 		} else {
 			props = def
 		}
-		// config keys in etc folder will transform to lowercase
-		// while those in data will not
-		if c, ok := cfg[strings.ToLower(confkey)]; ok {
-			for k, v := range c {
-				props[k] = v
+		if confkey != "" {
+			// config keys in etc folder will transform to lowercase
+			// while those in data will not
+			if c, ok := cfg[strings.ToLower(confkey)]; ok {
+				for k, v := range c {
+					props[k] = v
+				}
+			} else if c, ok := cfg[confkey]; ok {
+				for k, v := range c {
+					props[k] = v
+				}
+			} else {
+				conf.Log.Warnf("fail to find config key %s for source %s", confkey, sourceType)
 			}
-		} else if c, ok := cfg[confkey]; ok {
-			for k, v := range c {
-				props[k] = v
-			}
-		} else {
-			conf.Log.Warnf("fail to find config key %s for source %s", confkey, sourceType)
 		}
 	}
+	connectionSelector, ok := props["connectionSelector"]
+	if ok {
+		selectorID, ok := connectionSelector.(string)
+		if ok {
+			meta, err := connection.GetConnectionDetail(nil, selectorID)
+			if err != nil {
+				conf.Log.Warnf("load connection meta %s failed, err:%v", selectorID, err)
+			} else {
+				for key, value := range meta.Props {
+					props[key] = value
+				}
+			}
+		}
+	}
+
 	f := options.FORMAT
 	if f == "" {
 		f = "json"
 	}
 	props["format"] = strings.ToLower(f)
 	props["key"] = options.KEY
-	conf.Log.Debugf("get conf for %s with conf key %s: %v", sourceType, confkey, printable(props))
+	props["datasource"] = options.DATASOURCE
+	props["schemaId"] = options.SCHEMAID
+	props["delimiter"] = options.DELIMITER
+	props["retainSize"] = options.RETAIN_SIZE
+	props["strictValidation"] = options.STRICT_VALIDATION
+	props["timestamp"] = options.TIMESTAMP
+	props["timestampFormat"] = options.TIMESTAMP_FORMAT
+	conf.Log.Infof("get conf for %s with conf key %s: %v", sourceType, confkey, printable(props))
 	return props
 }
 

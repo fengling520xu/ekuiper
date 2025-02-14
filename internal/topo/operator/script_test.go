@@ -1,4 +1,4 @@
-// Copyright 2023 EMQ Technologies Co., Ltd.
+// Copyright 2023-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,9 +21,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/internal/xsql"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/context"
+	"github.com/lf-edge/ekuiper/v2/internal/xsql"
 )
 
 func TestScriptOp(t *testing.T) {
@@ -56,7 +56,7 @@ func TestScriptOp(t *testing.T) {
 					return msgs
 				}`,
 			data: &xsql.WindowTuples{
-				Content: []xsql.TupleRow{
+				Content: []xsql.Row{
 					&xsql.Tuple{
 						Emitter: "tbl",
 						Message: xsql.Message{
@@ -78,7 +78,7 @@ func TestScriptOp(t *testing.T) {
 				},
 			},
 			result: &xsql.WindowTuples{
-				Content: []xsql.TupleRow{
+				Content: []xsql.Row{
 					&xsql.Tuple{
 						Emitter: "",
 						Message: xsql.Message{
@@ -110,7 +110,7 @@ func TestScriptOp(t *testing.T) {
 				}`,
 			isAgg: true,
 			data: &xsql.WindowTuples{
-				Content: []xsql.TupleRow{
+				Content: []xsql.Row{
 					&xsql.Tuple{
 						Emitter: "tbl",
 						Message: xsql.Message{

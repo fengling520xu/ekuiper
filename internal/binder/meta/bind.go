@@ -15,9 +15,9 @@
 package meta
 
 import (
-	"github.com/lf-edge/ekuiper/internal/binder/io"
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/meta"
+	"github.com/lf-edge/ekuiper/v2/internal/binder/io"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/meta"
 )
 
 // Bind Must run after function and io bound
@@ -31,11 +31,17 @@ func Bind() {
 	}); nil != err {
 		conf.Log.Errorf("readSourceMetaDir:%v", err)
 	}
+	if err := meta.ReadSourceMetaData(); err != nil {
+		conf.Log.Errorf("readSourceMetaData:%v", err)
+	}
 	if err := meta.ReadSinkMetaDir(func(name string) bool {
 		s, _ := io.Sink(name)
 		return s != nil
 	}); nil != err {
 		conf.Log.Errorf("readSinkMetaDir:%v", err)
+	}
+	if err := meta.ReadSinkMetaData(); err != nil {
+		conf.Log.Errorf("readSinkMetaData:%v", err)
 	}
 	if err := meta.ReadUiMsgDir(); nil != err {
 		conf.Log.Errorf("readUiMsgDir:%v", err)

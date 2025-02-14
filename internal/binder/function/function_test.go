@@ -1,4 +1,4 @@
-// Copyright 2021 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,6 +17,11 @@ package function
 import (
 	"fmt"
 	"testing"
+
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/lf-edge/ekuiper/v2/pkg/modules"
 )
 
 func TestManager(t *testing.T) {
@@ -67,4 +72,15 @@ func TestManager(t *testing.T) {
 	if h {
 		t.Errorf("find undefined function set other")
 	}
+}
+
+func TestRegister(t *testing.T) {
+	modules.RegisterFunc("nouse", func() api.Function {
+		return nil
+	})
+	m := GetManager()
+	_, ok := m.ConvName("nouse")
+	assert.True(t, ok)
+	_, err := m.Function("nouse")
+	assert.NoError(t, err)
 }

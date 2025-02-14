@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,11 +16,14 @@ package runtime
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	kctx "github.com/lf-edge/ekuiper/internal/topo/context"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+	nerrors "go.nanomsg.org/mangos/v3/errors"
+
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	kctx "github.com/lf-edge/ekuiper/v2/internal/topo/context"
 )
 
 // PortableFunc each function symbol only has a singleton
@@ -41,7 +44,7 @@ func NewPortableFunc(symbolName string, reg *PluginMeta) (_ *PortableFunc, e err
 	// Setup channel and route the data
 	conf.Log.Infof("Start running portable function meta %+v", reg)
 	pm := GetPluginInsManager()
-	ins, err := pm.getOrStartProcess(reg, PortbleConf)
+	ins, err := pm.GetOrStartProcess(reg, PortbleConf)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +88,8 @@ func (f *PortableFunc) Validate(args []interface{}) error {
 	}
 	res, err := f.dataCh.Req(jsonArg)
 	if err != nil {
-		return err
+		e := handleTimeout(err, f.reg.Name)
+		return e
 	}
 	fr := &FuncReply{}
 	err = json.Unmarshal(res, fr)
@@ -99,7 +103,7 @@ func (f *PortableFunc) Validate(args []interface{}) error {
 	}
 }
 
-func (f *PortableFunc) Exec(args []interface{}, ctx api.FunctionContext) (interface{}, bool) {
+func (f *PortableFunc) Exec(ctx api.FunctionContext, args []any) (interface{}, bool) {
 	ctx.GetLogger().Debugf("running portable func with args %+v", args)
 	ctxRaw, err := encodeCtx(ctx)
 	if err != nil {
@@ -111,7 +115,8 @@ func (f *PortableFunc) Exec(args []interface{}, ctx api.FunctionContext) (interf
 	}
 	res, err := f.dataCh.Req(jsonArg)
 	if err != nil {
-		return err, false
+		e := handleTimeout(err, f.reg.Name)
+		return e, false
 	}
 	fr := &FuncReply{}
 	err = json.Unmarshal(res, fr)
@@ -126,6 +131,19 @@ func (f *PortableFunc) Exec(args []interface{}, ctx api.FunctionContext) (interf
 		}
 	}
 	return fr.Result, fr.State
+}
+
+func handleTimeout(err error, pname string) error {
+	if errors.Is(err, nerrors.ErrRecvTimeout) {
+		pm := GetPluginInsManager()
+		status, ok := pm.GetPluginInsStatus(pname)
+		if !ok {
+			return fmt.Errorf("plugin %s was removed", pname)
+		} else {
+			return fmt.Errorf("time out, plugin %s status %s, message: %s", pname, status.Status, status.ErrMsg)
+		}
+	}
+	return err
 }
 
 func (f *PortableFunc) IsAggregate() bool {

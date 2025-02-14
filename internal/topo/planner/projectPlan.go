@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ package planner
 import (
 	"strconv"
 
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
 )
 
 type ProjectPlan struct {
@@ -25,12 +25,12 @@ type ProjectPlan struct {
 	isAggregate      bool
 	allWildcard      bool
 	sendMeta         bool
+	sendNil          bool
 	fields           ast.Fields
 	colNames         [][]string
 	aliasNames       []string
 	exprNames        []string
 	exceptNames      []string
-	windowFuncNames  map[string]struct{}
 	wildcardEmitters map[string]bool
 	aliasFields      ast.Fields
 	exprFields       ast.Fields
@@ -68,9 +68,6 @@ func (p ProjectPlan) Init() *ProjectPlan {
 	}
 	p.baseLogicalPlan.self = &p
 	p.baseLogicalPlan.setPlanType(PROJECT)
-	if len(p.windowFuncNames) < 1 {
-		p.windowFuncNames = nil
-	}
 	return &p
 }
 

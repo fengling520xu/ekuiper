@@ -1,4 +1,4 @@
-// Copyright 2022 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,12 +17,17 @@ package server
 import (
 	"github.com/gorilla/mux"
 
-	"github.com/lf-edge/ekuiper/internal/binder"
+	"github.com/lf-edge/ekuiper/v2/internal/binder"
 )
 
 type component interface {
 	register()
 	rest(r *mux.Router)
+}
+
+type confExporter interface {
+	// return the exporter
+	exporter() ConfManager
 }
 
 type compServer interface {

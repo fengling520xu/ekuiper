@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,8 +17,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"net/http"
 	"runtime"
@@ -26,11 +29,12 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/lf-edge/ekuiper/internal/binder"
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/plugin"
-	"github.com/lf-edge/ekuiper/internal/plugin/native"
-	"github.com/lf-edge/ekuiper/pkg/errorx"
+	"github.com/lf-edge/ekuiper/v2/internal/binder"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin/native"
+	"github.com/lf-edge/ekuiper/v2/pkg/errorx"
+	"github.com/lf-edge/ekuiper/v2/pkg/validate"
 )
 
 var nativeManager *native.Manager
@@ -65,6 +69,10 @@ func (p pluginComp) rest(r *mux.Router) {
 	r.HandleFunc("/plugins/udfs/{name}", functionsGetHandler).Methods(http.MethodGet)
 }
 
+func (p pluginComp) exporter() ConfManager {
+	return pluginExporter{}
+}
+
 func pluginsHandler(w http.ResponseWriter, r *http.Request, t plugin.PluginType) {
 	defer func(Body io.ReadCloser) { _ = Body.Close() }(r.Body)
 	switch r.Method {
@@ -79,6 +87,11 @@ func pluginsHandler(w http.ResponseWriter, r *http.Request, t plugin.PluginType)
 			handleError(w, err, fmt.Sprintf("Invalid body: Error decoding the %s plugin json", plugin.PluginTypes[t]), logger)
 			return
 		}
+		if err := validate.ValidatePath(sd.GetFile()); err != nil {
+			handleError(w, err, "", logger)
+			return
+		}
+
 		err = nativeManager.Register(t, sd)
 		if err != nil {
 			handleError(w, err, fmt.Sprintf("%s plugins create command error", plugin.PluginTypes[t]), logger)
@@ -109,7 +122,8 @@ func pluginHandler(w http.ResponseWriter, r *http.Request, t plugin.PluginType) 
 		} else {
 			result = fmt.Sprintf("%s and eKuiper must restart for the change to take effect.", result)
 		}
-		_, _ = fmt.Fprint(w, result)
+		escapedContent := template.HTMLEscapeString(result)
+		w.Write([]byte(escapedContent))
 	case http.MethodGet:
 		j, ok := nativeManager.GetPluginInfo(t, name)
 		if !ok {
@@ -252,7 +266,7 @@ func prebuildPluginsHandler(w http.ResponseWriter, _ *http.Request, t plugin.Plu
 			jsonResponse(plugins, w, logger)
 		}
 	} else {
-		handleError(w, fmt.Errorf(emsg), "", logger)
+		handleError(w, errors.New(emsg), "", logger)
 	}
 }
 
@@ -286,22 +300,24 @@ func fetchPluginList(t plugin.PluginType, hosts, os, arch string) (result map[st
 	return
 }
 
-func pluginReset() {
-	nativeManager.UninstallAllPlugins()
+type pluginExporter struct{}
+
+func (e pluginExporter) Import(ctx context.Context, plugins map[string]string) map[string]string {
+	return nativeManager.PluginImport(ctx, plugins)
 }
 
-func pluginExport() map[string]string {
+func (e pluginExporter) PartialImport(ctx context.Context, plugins map[string]string) map[string]string {
+	return nativeManager.PluginPartialImport(ctx, plugins)
+}
+
+func (e pluginExporter) Export() map[string]string {
 	return nativeManager.GetAllPlugins()
 }
 
-func pluginStatusExport() map[string]string {
+func (e pluginExporter) Status() map[string]string {
 	return nativeManager.GetAllPluginsStatus()
 }
 
-func pluginImport(plugins map[string]string) error {
-	return nativeManager.PluginImport(plugins)
-}
-
-func pluginPartialImport(plugins map[string]string) map[string]string {
-	return nativeManager.PluginPartialImport(plugins)
+func (e pluginExporter) Reset() {
+	nativeManager.UninstallAllPlugins()
 }

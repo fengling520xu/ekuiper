@@ -1,4 +1,4 @@
-// Copyright 2021-2023 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,9 +17,10 @@ package mock
 import (
 	"strings"
 
-	"github.com/lf-edge/ekuiper/internal/plugin"
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/errorx"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/plugin"
+	"github.com/lf-edge/ekuiper/v2/pkg/errorx"
 )
 
 type MockFactory struct{}
@@ -40,7 +41,7 @@ func (f *MockFactory) SourcePluginInfo(_ string) (plugin.EXTENSION_TYPE, string,
 	return plugin.INTERNAL, "", ""
 }
 
-func (f *MockFactory) LookupSource(name string) (api.LookupSource, error) {
+func (f *MockFactory) LookupSource(name string) (api.Source, error) {
 	return nil, nil
 }
 
@@ -64,6 +65,10 @@ func (f *MockFactory) Function(name string) (api.Function, error) {
 	}
 }
 
+func (f *MockFactory) FunctionPluginInfo(funcName string) (plugin.EXTENSION_TYPE, string, string) {
+	return plugin.NONE_EXTENSION, "", ""
+}
+
 func (f *MockFactory) ConvName(name string) (string, bool) {
 	return name, true
 }
@@ -76,17 +81,13 @@ func (f *MockFactory) HasFunctionSet(funcName string) bool {
 	}
 }
 
-func (f *MockFactory) FunctionPluginInfo(funcName string) (plugin.EXTENSION_TYPE, string, string) {
-	return plugin.NONE_EXTENSION, "", ""
-}
-
 type mockFunc struct{}
 
 func (m *mockFunc) Validate(_ []interface{}) error {
 	return nil
 }
 
-func (m *mockFunc) Exec(_ []interface{}, _ api.FunctionContext) (interface{}, bool) {
+func (m *mockFunc) Exec(ctx api.FunctionContext, args []any) (interface{}, bool) {
 	return nil, true
 }
 
@@ -96,11 +97,11 @@ func (m *mockFunc) IsAggregate() bool {
 
 type mockSource struct{}
 
-func (m *mockSource) Open(_ api.StreamContext, _ chan<- api.SourceTuple, _ chan<- error) {
-	return
+func (m *mockSource) Provision(ctx api.StreamContext, configs map[string]any) error {
+	return nil
 }
 
-func (m *mockSource) Configure(_ string, _ map[string]interface{}) error {
+func (m *mockSource) Connect(ctx api.StreamContext, _ api.StatusChangeHandler) error {
 	return nil
 }
 
@@ -108,13 +109,17 @@ func (m *mockSource) Close(_ api.StreamContext) error {
 	return nil
 }
 
-type mockSink struct{}
-
-func (m *mockSink) Open(_ api.StreamContext) error {
+func (m *mockSource) Subscribe(ctx api.StreamContext, ingest api.TupleIngest, ingestError api.ErrorIngest) error {
 	return nil
 }
 
-func (m *mockSink) Configure(_ map[string]interface{}) error {
+type mockSink struct{}
+
+func (m *mockSink) Provision(ctx api.StreamContext, configs map[string]any) error {
+	return nil
+}
+
+func (m *mockSink) Connect(ctx api.StreamContext, _ api.StatusChangeHandler) error {
 	return nil
 }
 

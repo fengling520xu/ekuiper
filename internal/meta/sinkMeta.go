@@ -1,4 +1,4 @@
-// Copyright 2021 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,9 +20,12 @@ import (
 	"path"
 	"strings"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/pkg/filex"
-	"github.com/lf-edge/ekuiper/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/internal/binder/io"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/filex"
+	"github.com/lf-edge/ekuiper/v2/internal/plugin"
+	"github.com/lf-edge/ekuiper/v2/pkg/cast"
+	"github.com/lf-edge/ekuiper/v2/pkg/errorx"
 )
 
 const (
@@ -103,6 +106,7 @@ type (
 		Libs   []string    `json:"libs"`
 		Fields []field     `json:"properties"`
 		Node   interface{} `json:"node"`
+		Type   string      `json:"type,omitempty"`
 	}
 )
 
@@ -186,6 +190,17 @@ func newUiSink(fi *fileSink) (*uiSink, error) {
 
 var gSinkmetadata = make(map[string]*uiSink) // immutable
 
+func ReadSinkMetaData() error {
+	keys, err := conf.GetYamlConfigAllKeys("sinks")
+	if err != nil {
+		return err
+	}
+	for key := range keys {
+		loadConfigOperatorForSink(key)
+	}
+	return nil
+}
+
 func ReadSinkMetaDir(checker InstallChecker) error {
 	confDir, err := conf.GetConfLoc()
 	if nil != err {
@@ -194,28 +209,6 @@ func ReadSinkMetaDir(checker InstallChecker) error {
 
 	dir := path.Join(confDir, "sinks")
 	files, err := os.ReadDir(dir)
-	if nil != err {
-		return err
-	}
-	for _, file := range files {
-		fname := file.Name()
-		if !strings.HasSuffix(fname, ".json") {
-			continue
-		}
-
-		filePath := path.Join(dir, fname)
-		if err := ReadSinkMetaFile(filePath, checker(strings.TrimSuffix(fname, ".json"))); nil != err {
-			return err
-		}
-	}
-
-	confDir, err = conf.GetDataLoc()
-	if nil != err {
-		return err
-	}
-
-	dir = path.Join(confDir, "sinks")
-	files, err = os.ReadDir(dir)
 	if nil != err {
 		return err
 	}
@@ -260,42 +253,56 @@ func ReadSinkMetaFile(filePath string, installed bool) error {
 		return err
 	}
 	loadConfigOperatorForSink(strings.TrimSuffix(finame, `.json`))
-	conf.Log.Infof("Loading metadata file for sink: %s", finame)
 	return nil
 }
 
-func GetSinkMeta(pluginName, language string) (*uiSink, error) {
+func GetSinkMeta(pluginName, language string) (s *uiSink, err error) {
+	defer func() {
+		if err != nil {
+			if _, ok := err.(errorx.ErrorWithCode); !ok {
+				err = errorx.NewWithCode(errorx.ConfKeyError, err.Error())
+			}
+		}
+	}()
+
 	fileName := pluginName + `.json`
 	sinkMetadata := gSinkmetadata
 	data, ok := sinkMetadata[fileName]
 	if !ok || data == nil {
 		return nil, fmt.Errorf(`%s%s`, getMsg(language, sink, "not_found_plugin"), pluginName)
 	}
+	t, _, _ := io.GetSinkPlugin(pluginName)
+	data.Type = plugin.ExtensionTypes[t]
 	return data, nil
 }
 
 type pluginfo struct {
 	Name  string `json:"name"`
 	About *about `json:"about"`
+	Type  string `json:"type,omitempty"`
 }
 
 func GetSinks() (sinks []*pluginfo) {
 	sinkMeta := gSinkmetadata
 	for fileName, v := range sinkMeta {
-		node := new(pluginfo)
-		node.Name = strings.TrimSuffix(fileName, `.json`)
-		node.About = v.About
+		name := strings.TrimSuffix(fileName, `.json`)
+		t, _, _ := io.GetSinkPlugin(name)
+		n := &pluginfo{
+			Name:  name,
+			About: v.About,
+			Type:  plugin.ExtensionTypes[t],
+		}
 		i := 0
 		for ; i < len(sinks); i++ {
-			if node.Name <= sinks[i].Name {
-				sinks = append(sinks, node)
+			if n.Name <= sinks[i].Name {
+				sinks = append(sinks, n)
 				copy(sinks[i+1:], sinks[i:])
-				sinks[i] = node
+				sinks[i] = n
 				break
 			}
 		}
 		if len(sinks) == i {
-			sinks = append(sinks, node)
+			sinks = append(sinks, n)
 		}
 	}
 	return sinks

@@ -23,8 +23,8 @@ import (
 
 	"github.com/msgpack-rpc/msgpack-rpc-go/rpc"
 
-	"github.com/lf-edge/ekuiper/internal/topo/topotest"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/topo/topotest"
 )
 
 func TestMsgpackService(t *testing.T) {
@@ -68,9 +68,9 @@ func TestMsgpackService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		}, {
 			Name: `TestRestRule2`,
@@ -92,22 +92,22 @@ func TestMsgpackService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 		}, {
 			Name: `TestRestRule3`,
 			Sql:  `SELECT getFeatureFromMsgpack(self)->feature[0]->box->h FROM fakeBin`,
 			R: [][]map[string]interface{}{
 				{{
-					"kuiper_field_0": float64(106), // Convert by the testing tool
+					"kuiper_field_0": int64(106), // Convert by the testing tool
 				}},
 				{{
-					"kuiper_field_0": float64(107),
+					"kuiper_field_0": int64(107),
 				}},
 				{{
-					"kuiper_field_0": float64(108),
+					"kuiper_field_0": int64(108),
 				}},
 			},
 			M: map[string]interface{}{
@@ -116,9 +116,9 @@ func TestMsgpackService(t *testing.T) {
 				"op_2_project_0_records_in_total":   int64(3),
 				"op_2_project_0_records_out_total":  int64(3),
 
-				"sink_mockSink_0_exceptions_total":  int64(0),
-				"sink_mockSink_0_records_in_total":  int64(3),
-				"sink_mockSink_0_records_out_total": int64(3),
+				"sink_memory_0_0_exceptions_total":  int64(0),
+				"sink_memory_0_0_records_in_total":  int64(3),
+				"sink_memory_0_0_records_out_total": int64(3),
 			},
 			//}, {
 			//	Name: `TestRestRule4`,
@@ -143,14 +143,14 @@ func TestMsgpackService(t *testing.T) {
 			//		"op_2_project_0_records_in_total":   int64(3),
 			//		"op_2_project_0_records_out_total":  int64(3),
 			//
-			//		"sink_mockSink_0_exceptions_total":  int64(0),
-			//		"sink_mockSink_0_records_in_total":  int64(3),
-			//		"sink_mockSink_0_records_out_total": int64(3),
+			//		"sink_memory_0_0_exceptions_total":  int64(0),
+			//		"sink_memory_0_0_records_in_total":  int64(3),
+			//		"sink_memory_0_0_records_out_total": int64(3),
 			//	},
 		},
 	}
 	topotest.HandleStream(true, streamList, t)
-	topotest.DoRuleTest(t, tests, 0, &api.RuleOption{
+	topotest.DoRuleTest(t, tests, &def.RuleOption{
 		BufferLength: 100,
 		SendError:    true,
 	}, 0)

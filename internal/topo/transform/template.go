@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,112 +15,19 @@
 package transform
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"text/template"
 
-	"github.com/lf-edge/ekuiper/internal/conf"
-	"github.com/lf-edge/ekuiper/internal/converter"
-	"github.com/lf-edge/ekuiper/internal/converter/delimited"
-	"github.com/lf-edge/ekuiper/pkg/ast"
-	"github.com/lf-edge/ekuiper/pkg/message"
+	"github.com/lf-edge/ekuiper/v2/internal/conf"
 )
-
-// TransFunc is the function to transform data
-type TransFunc func(interface{}) ([]byte, bool, error)
-
-func GenTransform(dt string, format string, schemaId string, delimiter string, dataField string, fields []string) (TransFunc, error) {
-	var (
-		tp  *template.Template = nil
-		c   message.Converter
-		err error
-	)
-	switch format {
-	case message.FormatProtobuf, message.FormatCustom:
-		c, err = converter.GetOrCreateConverter(&ast.Options{FORMAT: format, SCHEMAID: schemaId})
-		if err != nil {
-			return nil, err
-		}
-	case message.FormatDelimited:
-		c, err = converter.GetOrCreateConverter(&ast.Options{FORMAT: format, DELIMITER: delimiter})
-		if err != nil {
-			return nil, err
-		}
-		c.(*delimited.Converter).SetColumns(fields)
-	case message.FormatJson:
-		c, err = converter.GetOrCreateConverter(&ast.Options{FORMAT: format})
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	if dt != "" {
-		temp, err := template.New("sink").Funcs(conf.FuncMap).Parse(dt)
-		if err != nil {
-			return nil, err
-		}
-		tp = temp
-	}
-	return func(d interface{}) ([]byte, bool, error) {
-		var (
-			bs          []byte
-			transformed bool
-			selected    bool
-			m           interface{}
-			e           error
-		)
-		if tp != nil {
-			var output bytes.Buffer
-			err := tp.Execute(&output, d)
-			if err != nil {
-				return nil, false, fmt.Errorf("fail to encode data %v with dataTemplate for error %v", d, err)
-			}
-			bs = output.Bytes()
-			transformed = true
-		}
-
-		if transformed {
-			m, selected, e = TransItem(bs, dataField, fields)
-		} else {
-			m, selected, e = TransItem(d, dataField, fields)
-		}
-		if e != nil {
-			return nil, false, fmt.Errorf("fail to TransItem data %v for error %v", d, e)
-		}
-		if selected {
-			d = m
-		}
-
-		switch format {
-		case message.FormatJson:
-			if transformed && !selected {
-				return bs, true, nil
-			}
-			outBytes, err := c.Encode(d)
-			return outBytes, transformed || selected, err
-		case message.FormatProtobuf, message.FormatCustom, message.FormatDelimited:
-			if transformed && !selected {
-				m := make(map[string]interface{})
-				err := json.Unmarshal(bs, &m)
-				if err != nil {
-					return nil, false, fmt.Errorf("fail to decode data %s after applying dataTemplate for error %v", string(bs), err)
-				}
-				d = m
-			}
-			outBytes, err := c.Encode(d)
-			return outBytes, transformed || selected, err
-		default: // should not happen
-			return nil, false, fmt.Errorf("unsupported format %v", format)
-		}
-	}, nil
-}
 
 func GenTp(dt string) (*template.Template, error) {
 	return template.New("sink").Funcs(conf.FuncMap).Parse(dt)
 }
 
-// If you do not need to convert data to []byte, you can use this function directly. Otherwise, use TransFunc.
+// TransItem If you do not need to convert data to []byte, you can use this function directly. Otherwise, use TransFunc.
 func TransItem(input interface{}, dataField string, fields []string) (interface{}, bool, error) {
 	if dataField == "" && len(fields) == 0 {
 		return input, false, nil
@@ -152,7 +59,17 @@ func TransItem(input interface{}, dataField string, fields []string) (interface{
 			return nil, false, fmt.Errorf("fail to decode data %v", input)
 		}
 	}
-
+	if inputArr, ok := input.([]any); ok {
+		ma := make([]map[string]any, len(inputArr))
+		for i, v := range inputArr {
+			if out, isMap := v.(map[string]interface{}); !isMap {
+				return nil, false, fmt.Errorf("unsupported type %v", input)
+			} else {
+				ma[i] = maps.Clone(out)
+			}
+		}
+		input = ma
+	}
 	m, err := selectMap(input, fields)
 	if err != nil && err.Error() != "fields cannot be empty" {
 		return nil, false, fmt.Errorf("fail to decode data %v for error %v", input, err)
@@ -175,19 +92,6 @@ func selectMap(input interface{}, fields []string) (interface{}, error) {
 			output[field] = input.(map[string]interface{})[field]
 		}
 		return output, nil
-	case []interface{}:
-		for _, v := range input.([]interface{}) {
-			output := make(map[string]interface{})
-			if out, ok := v.(map[string]interface{}); !ok {
-				return input, fmt.Errorf("unsupported type %v", input)
-			} else {
-				for _, field := range fields {
-					output[field] = out[field]
-				}
-				outputs = append(outputs, output)
-			}
-		}
-		return outputs, nil
 	case []map[string]interface{}:
 		for _, v := range input.([]map[string]interface{}) {
 			output := make(map[string]interface{})

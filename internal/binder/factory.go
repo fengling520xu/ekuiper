@@ -1,4 +1,4 @@
-// Copyright 2022 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,13 +15,14 @@
 package binder
 
 import (
-	"github.com/lf-edge/ekuiper/internal/plugin"
-	"github.com/lf-edge/ekuiper/pkg/api"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/plugin"
 )
 
 type SourceFactory interface {
 	Source(name string) (api.Source, error)
-	LookupSource(name string) (api.LookupSource, error)
+	LookupSource(name string) (api.Source, error)
 	// SourcePluginInfo use source type name (mqtt/video) to get source plugin installation information
 	// first return value is extension type, only native/portable plugin type have installation information
 	// second return value is the plugin name

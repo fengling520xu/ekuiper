@@ -14,6 +14,8 @@
 
 package definition
 
+import "time"
+
 type Database interface {
 	Connect() error
 	Disconnect() error
@@ -24,16 +26,23 @@ type Config struct {
 	ExtStateType string
 	Redis        RedisConfig
 	Sqlite       SqliteConfig
+	Fdb          FdbConfig
 }
 
 type RedisConfig struct {
 	Host     string
 	Port     int
 	Password string
-	Timeout  int
+	Timeout  time.Duration
 }
 
 type SqliteConfig struct {
 	Path string
 	Name string
+}
+
+type FdbConfig struct {
+	Path       string
+	APIVersion int
+	Timeout    int64
 }

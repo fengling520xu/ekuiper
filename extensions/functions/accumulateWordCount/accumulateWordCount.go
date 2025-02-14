@@ -1,4 +1,4 @@
-// Copyright 2021 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,8 +18,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lf-edge/ekuiper/pkg/api"
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
 )
 
 /**
@@ -32,7 +33,7 @@ import (
 
 type accumulateWordCountFunc struct{}
 
-func (f *accumulateWordCountFunc) Validate(args []interface{}) error {
+func (f *accumulateWordCountFunc) Validate(args []any) error {
 	if len(args) != 2 {
 		return fmt.Errorf("wordCount function only supports 2 parameter but got %d", len(args))
 	}
@@ -44,7 +45,7 @@ func (f *accumulateWordCountFunc) Validate(args []interface{}) error {
 	return nil
 }
 
-func (f *accumulateWordCountFunc) Exec(args []interface{}, ctx api.FunctionContext) (interface{}, bool) {
+func (f *accumulateWordCountFunc) Exec(ctx api.FunctionContext, args []any) (any, bool) {
 	logger := ctx.GetLogger()
 	fmt.Printf("Exec accumulate")
 	col, ok := args[0].(string)

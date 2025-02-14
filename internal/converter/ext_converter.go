@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,20 +17,33 @@
 package converter
 
 import (
-	"github.com/lf-edge/ekuiper/internal/converter/custom"
-	"github.com/lf-edge/ekuiper/internal/converter/protobuf"
-	"github.com/lf-edge/ekuiper/internal/pkg/def"
-	"github.com/lf-edge/ekuiper/internal/schema"
-	"github.com/lf-edge/ekuiper/pkg/message"
+	"strings"
+
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/internal/converter/protobuf"
+	"github.com/lf-edge/ekuiper/v2/internal/pkg/def"
+	"github.com/lf-edge/ekuiper/v2/internal/schema"
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
+	"github.com/lf-edge/ekuiper/v2/pkg/message"
+	"github.com/lf-edge/ekuiper/v2/pkg/modules"
 )
 
 func init() {
-	converters[message.FormatProtobuf] = func(schemaFileName string, schemaMessageName string, _ string) (message.Converter, error) {
-		ffs, err := schema.GetSchemaFile(def.PROTOBUF, schemaFileName)
+	modules.RegisterConverter(message.FormatProtobuf, func(_ api.StreamContext, schemaId string, _ map[string]*ast.JsonStreamField, props map[string]any) (message.Converter, error) {
+		schemaFile := ""
+		schemaName := ""
+		if schemaId != "" {
+			r := strings.Split(schemaId, ".")
+			schemaFile = r[0]
+			if len(r) >= 2 {
+				schemaName = r[1]
+			}
+		}
+		ffs, err := schema.GetSchemaFile(def.PROTOBUF, schemaFile)
 		if err != nil {
 			return nil, err
 		}
-		return protobuf.NewConverter(ffs.SchemaFile, ffs.SoFile, schemaMessageName)
-	}
-	converters[message.FormatCustom] = custom.LoadConverter
+		return protobuf.NewConverter(ffs.SchemaFile, ffs.SoFile, schemaName)
+	})
 }

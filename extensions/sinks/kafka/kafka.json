@@ -12,7 +12,7 @@
       "zh_CN": "https://ekuiper.org/docs/zh/latest/guide/sinks/plugin/kafka.html"
     },
     "description": {
-      "en_US": "This a sink for Kafka, it can be used for saving the analysis data into Redis.",
+      "en_US": "This a sink for Kafka, it can be used for saving the analysis data into Kafka.",
       "zh_CN": "为 Kafka 的持久化插件，可以用于将分析数据存入 Kafka 中"
     }
   },
@@ -28,11 +28,11 @@
       "type": "string",
       "hint": {
         "en_US": "The url of the Kafka broker list",
-        "zh_CN": "Kafka brokers的 URL 列表"
+        "zh_CN": "Kafka brokers 的 URL 列表"
       },
       "label": {
         "en_US": "broker list",
-        "zh_CN": "Broker url 列表"
+        "zh_CN": "Broker URL 列表"
       }
     },
     {
@@ -48,6 +48,21 @@
       "label": {
         "en_US": "Topic",
         "zh_CN": "主题"
+      }
+    },
+    {
+      "name": "requiredACKs",
+      "default": "",
+      "optional": false,
+      "control": "text",
+      "type": "int",
+      "hint": {
+        "en_US": "The mechanism for Kafka client to confirm messages",
+        "zh_CN": "Kafka 客户端确认消息的机制"
+      },
+      "label": {
+        "en_US": "requiredACKs",
+        "zh_CN": "确认机制"
       }
     },
     {
@@ -164,8 +179,23 @@
       }
     },
     {
+      "name": "batchSize",
+      "default": 1,
+      "optional": true,
+      "control": "text",
+      "type": "int",
+      "hint": {
+        "en_US": "Limit on how many messages will be buffered before being sent to kafka in one request, default 1",
+        "zh_CN": "一次性向 kafka 发送批量消息的数量"
+      },
+      "label": {
+        "en_US": "Batch Size",
+        "zh_CN": "批量消息发送"
+      }
+    },
+    {
       "name": "maxAttempts",
-      "default": true,
+      "default": 1,
       "optional": true,
       "control": "text",
       "type": "int",

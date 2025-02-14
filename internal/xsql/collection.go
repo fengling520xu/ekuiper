@@ -1,4 +1,4 @@
-// Copyright 2022-2023 EMQ Technologies Co., Ltd.
+// Copyright 2022-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,9 @@
 package xsql
 
 import (
-	"github.com/lf-edge/ekuiper/pkg/ast"
+	"github.com/lf-edge/ekuiper/contract/v2/api"
+
+	"github.com/lf-edge/ekuiper/v2/pkg/ast"
 )
 
 /*
@@ -28,6 +30,7 @@ type AggregateData interface {
 }
 
 type SortingData interface {
+	HasTracerCtx
 	Len() int
 	Swap(i, j int)
 	Index(i int) Row
@@ -35,38 +38,29 @@ type SortingData interface {
 
 // Collection A collection of rows as a table. It is used for window, join, group by, etc.
 type Collection interface {
+	HasTracerCtx
+	api.MessageTupleList
 	SortingData
 	// GroupRange through each group. For non-grouped collection, the whole data is a single group
 	GroupRange(func(i int, aggRow CollectionRow) (bool, error)) error
 	// Range through each row. For grouped collection, each row is an aggregation of groups
 	Range(func(i int, r ReadonlyRow) (bool, error)) error
-	// RangeSet range through each row by cloneing the row
+	// RangeSet range through each row by cloning the row
 	RangeSet(func(i int, r Row) (bool, error)) error
 	Filter(indexes []int) Collection
 	GetWindowRange() *WindowRange
-	Clone() Collection
 	// ToMaps returns the data as a map
 	ToMaps() []map[string]interface{}
-}
-
-type SingleCollection interface {
-	Collection
-	CollectionRow
+	// SetIsAgg Set by project, indicate if the collection is used in an aggregate context which will affect ToMaps output
 	SetIsAgg(isAgg bool)
 	// ToAggMaps returns the aggregated data as a map
 	ToAggMaps() []map[string]interface{}
 	// ToRowMaps returns all the data in the collection
 	ToRowMaps() []map[string]interface{}
-}
-
-type GroupedCollection interface {
-	Collection
-}
-
-// MergedCollection is a collection of rows that are from different sources
-type MergedCollection interface {
-	Collection
-	GetBySrc(emitter string) []TupleRow
+	// GetBySrc returns the rows by the given emitter
+	GetBySrc(emitter string) []Row
+	// Clone the collection
+	Clone() Collection
 }
 
 /*
@@ -74,9 +68,10 @@ type MergedCollection interface {
  */
 
 type WindowTuples struct {
-	Content []TupleRow // immutable
+	Ctx     api.StreamContext
+	Content []Row // immutable
 	*WindowRange
-	contentBySrc map[string][]TupleRow // volatile, temporary cache]
+	contentBySrc map[string][]Row // volatile, temporary cache]
 
 	AffiliateRow
 	cachedMap map[string]interface{}
@@ -84,14 +79,12 @@ type WindowTuples struct {
 }
 
 var (
-	_ MergedCollection = &WindowTuples{}
-	_ SingleCollection = &WindowTuples{}
+	_ Collection    = &WindowTuples{}
+	_ CollectionRow = &WindowTuples{}
 )
 
-// Window Tuples is also an aggregate row
-var _ CollectionRow = &WindowTuples{}
-
 type JoinTuples struct {
+	Ctx     api.StreamContext
 	Content []*JoinTuple
 	*WindowRange
 
@@ -100,21 +93,46 @@ type JoinTuples struct {
 	isAgg     bool
 }
 
+func (s *JoinTuples) GetTracerCtx() api.StreamContext {
+	return s.Ctx
+}
+
+func (s *JoinTuples) SetTracerCtx(ctx api.StreamContext) {
+	s.Ctx = ctx
+}
+
 var (
-	_ SingleCollection = &JoinTuples{}
-	_ CollectionRow    = &JoinTuples{}
+	_ Collection    = &JoinTuples{}
+	_ CollectionRow = &JoinTuples{}
 )
 
 type GroupedTuplesSet struct {
+	Ctx    api.StreamContext
 	Groups []*GroupedTuples
 	*WindowRange
 }
 
-var _ GroupedCollection = &GroupedTuplesSet{}
+func (s *GroupedTuplesSet) GetTracerCtx() api.StreamContext {
+	return s.Ctx
+}
+
+func (s *GroupedTuplesSet) SetTracerCtx(ctx api.StreamContext) {
+	s.Ctx = ctx
+}
+
+var _ Collection = &GroupedTuplesSet{}
 
 /*
  *   Collection implementations
  */
+
+func (w *WindowTuples) GetTracerCtx() api.StreamContext {
+	return w.Ctx
+}
+
+func (w *WindowTuples) SetTracerCtx(ctx api.StreamContext) {
+	w.Ctx = ctx
+}
 
 func (w *WindowTuples) Index(index int) Row {
 	return w.Content[index]
@@ -129,15 +147,17 @@ func (w *WindowTuples) Swap(i, j int) {
 	w.Content[i], w.Content[j] = w.Content[j], w.Content[i]
 }
 
-func (w *WindowTuples) GetBySrc(emitter string) []TupleRow {
+func (w *WindowTuples) GetBySrc(emitter string) []Row {
 	if w.contentBySrc == nil {
-		w.contentBySrc = make(map[string][]TupleRow)
+		w.contentBySrc = make(map[string][]Row)
 		for _, t := range w.Content {
-			e := t.GetEmitter()
-			if _, hasEmitter := w.contentBySrc[e]; !hasEmitter {
-				w.contentBySrc[e] = make([]TupleRow, 0)
+			if et, ok := t.(EmittedData); ok {
+				e := et.GetEmitter()
+				if _, hasEmitter := w.contentBySrc[e]; !hasEmitter {
+					w.contentBySrc[e] = make([]Row, 0)
+				}
+				w.contentBySrc[e] = append(w.contentBySrc[e], t)
 			}
-			w.contentBySrc[e] = append(w.contentBySrc[e], t)
 		}
 	}
 	return w.contentBySrc[emitter]
@@ -160,6 +180,14 @@ func (w *WindowTuples) Range(f func(i int, r ReadonlyRow) (bool, error)) error {
 	return nil
 }
 
+func (w *WindowTuples) RangeOfTuples(f func(index int, tuple api.MessageTuple) bool) {
+	for i, r := range w.Content {
+		if !f(i, r) {
+			break
+		}
+	}
+}
+
 func (w *WindowTuples) RangeSet(f func(i int, r Row) (bool, error)) error {
 	for i, r := range w.Content {
 		rc := r.Clone()
@@ -170,7 +198,7 @@ func (w *WindowTuples) RangeSet(f func(i int, r Row) (bool, error)) error {
 		if !b {
 			break
 		}
-		w.Content[i] = rc.(TupleRow)
+		w.Content[i] = rc.(Row)
 	}
 	return nil
 }
@@ -180,7 +208,7 @@ func (w *WindowTuples) GroupRange(f func(i int, aggRow CollectionRow) (bool, err
 	return err
 }
 
-func (w *WindowTuples) AddTuple(tuple *Tuple) *WindowTuples {
+func (w *WindowTuples) AddTuple(tuple Row) *WindowTuples {
 	w.Content = append(w.Content, tuple)
 	return w
 }
@@ -196,7 +224,7 @@ func (w *WindowTuples) AggregateEval(expr ast.Expr, v CallValuer) []interface{} 
 // Filter the tuples by the given predicate
 func (w *WindowTuples) Filter(indexes []int) Collection {
 	w.cachedMap = nil
-	newC := make([]TupleRow, 0, len(indexes))
+	newC := make([]Row, 0, len(indexes))
 	for _, i := range indexes {
 		newC = append(newC, w.Content[i])
 	}
@@ -245,9 +273,9 @@ func (w *WindowTuples) ToMap() map[string]interface{} {
 }
 
 func (w *WindowTuples) Clone() Collection {
-	ts := make([]TupleRow, len(w.Content))
+	ts := make([]Row, len(w.Content))
 	for i, t := range w.Content {
-		ts[i] = t.Clone().(TupleRow)
+		ts[i] = t.Clone()
 	}
 	c := &WindowTuples{
 		Content:      ts,
@@ -278,12 +306,12 @@ func (w *WindowTuples) ToMaps() []map[string]interface{} {
 	}
 }
 
-func (w *WindowTuples) Pick(allWildcard bool, cols [][]string, wildcardEmitters map[string]bool, except []string) {
+func (w *WindowTuples) Pick(allWildcard bool, cols [][]string, wildcardEmitters map[string]bool, except []string, sendNil bool) {
 	cols = w.AffiliateRow.Pick(cols)
 	for i, t := range w.Content {
 		tc := t.Clone()
-		tc.Pick(allWildcard, cols, wildcardEmitters, except)
-		w.Content[i] = tc.(TupleRow)
+		tc.Pick(allWildcard, cols, wildcardEmitters, except, sendNil)
+		w.Content[i] = tc
 	}
 }
 
@@ -321,6 +349,14 @@ func (s *JoinTuples) Range(f func(i int, r ReadonlyRow) (bool, error)) error {
 		}
 	}
 	return nil
+}
+
+func (s *JoinTuples) RangeOfTuples(f func(index int, tuple api.MessageTuple) bool) {
+	for i, r := range s.Content {
+		if !f(i, r) {
+			break
+		}
+	}
 }
 
 func (s *JoinTuples) RangeSet(f func(i int, r Row) (bool, error)) error {
@@ -416,17 +452,22 @@ func (s *JoinTuples) ToMaps() []map[string]interface{} {
 	}
 }
 
-func (s *JoinTuples) Pick(allWildcard bool, cols [][]string, wildcardEmitters map[string]bool, except []string) {
+func (s *JoinTuples) Pick(allWildcard bool, cols [][]string, wildcardEmitters map[string]bool, except []string, sendNil bool) {
 	cols = s.AffiliateRow.Pick(cols)
 	for i, t := range s.Content {
 		tc := t.Clone().(*JoinTuple)
-		tc.Pick(allWildcard, cols, wildcardEmitters, except)
+		tc.Pick(allWildcard, cols, wildcardEmitters, except, sendNil)
 		s.Content[i] = tc
 	}
 }
 
 func (s *JoinTuples) SetIsAgg(_ bool) {
 	s.isAgg = true
+}
+
+// GetBySrc to be implemented to support join after join
+func (s *JoinTuples) GetBySrc(_ string) []Row {
+	return nil
 }
 
 func (s *GroupedTuplesSet) Len() int        { return len(s.Groups) }
@@ -448,6 +489,14 @@ func (s *GroupedTuplesSet) Range(f func(i int, r ReadonlyRow) (bool, error)) err
 		}
 	}
 	return nil
+}
+
+func (s *GroupedTuplesSet) RangeOfTuples(f func(index int, tuple api.MessageTuple) bool) {
+	for i, r := range s.Groups {
+		if !f(i, r) {
+			break
+		}
+	}
 }
 
 func (s *GroupedTuplesSet) RangeSet(f func(i int, r Row) (bool, error)) error {
@@ -499,12 +548,29 @@ func (s *GroupedTuplesSet) Clone() Collection {
 	}
 }
 
-func (s *GroupedTuplesSet) ToMaps() []map[string]interface{} {
+func (s *GroupedTuplesSet) ToMaps() []map[string]any {
 	r := make([]map[string]interface{}, len(s.Groups))
 	for i, t := range s.Groups {
 		r[i] = t.ToMap()
 	}
 	return r
+}
+
+func (s *GroupedTuplesSet) SetIsAgg(_ bool) {
+	// do nothing
+}
+
+func (s *GroupedTuplesSet) ToAggMaps() []map[string]any {
+	return s.ToMaps()
+}
+
+func (s *GroupedTuplesSet) ToRowMaps() []map[string]any {
+	return s.ToMaps()
+}
+
+// GetBySrc to be implemented to support join after join
+func (s *GroupedTuplesSet) GetBySrc(_ string) []Row {
+	return nil
 }
 
 /*
@@ -544,3 +610,71 @@ func (r *WindowRange) FuncValue(key string) (interface{}, bool) {
 		return nil, false
 	}
 }
+
+type TransformedTupleList struct {
+	Ctx     api.StreamContext
+	Content []api.MessageTuple
+	Maps    []map[string]any
+	Props   map[string]string
+}
+
+func (l *TransformedTupleList) GetTracerCtx() api.StreamContext {
+	return l.Ctx
+}
+
+func (l *TransformedTupleList) SetTracerCtx(ctx api.StreamContext) {
+	l.Ctx = ctx
+}
+
+func (l *TransformedTupleList) DynamicProps(template string) (string, bool) {
+	v, ok := l.Props[template]
+	return v, ok
+}
+
+func (l *TransformedTupleList) AllProps() map[string]string {
+	return l.Props
+}
+
+func (l *TransformedTupleList) ToMaps() []map[string]any {
+	if l.Maps == nil {
+		l.Maps = make([]map[string]any, len(l.Content))
+		for i, t := range l.Content {
+			l.Maps[i] = t.ToMap()
+		}
+	}
+	return l.Maps
+}
+
+func (l *TransformedTupleList) Clone() *TransformedTupleList {
+	ng := make([]api.MessageTuple, len(l.Content))
+	for i, g := range l.Content {
+		switch gt := g.(type) {
+		case Row:
+			ng[i] = gt.Clone()
+		default:
+			ng[i] = g
+		}
+	}
+	return &TransformedTupleList{
+		Ctx:     l.Ctx,
+		Content: ng,
+		Props:   l.Props,
+	}
+}
+
+func (l *TransformedTupleList) RangeOfTuples(f func(index int, tuple api.MessageTuple) bool) {
+	for i, v := range l.Content {
+		if !f(i, v) {
+			break
+		}
+	}
+}
+
+func (l *TransformedTupleList) Len() int {
+	return len(l.Content)
+}
+
+var (
+	_ api.MessageTupleList = &TransformedTupleList{}
+	_ api.HasDynamicProps  = &TransformedTupleList{}
+)

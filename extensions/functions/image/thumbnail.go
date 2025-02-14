@@ -1,4 +1,4 @@
-// Copyright 2021 EMQ Technologies Co., Ltd.
+// Copyright 2021-2024 EMQ Technologies Co., Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,21 +21,20 @@ import (
 	"image/jpeg"
 	"image/png"
 
+	"github.com/lf-edge/ekuiper/contract/v2/api"
 	"github.com/nfnt/resize"
-
-	"github.com/lf-edge/ekuiper/pkg/api"
 )
 
 type thumbnail struct{}
 
-func (f *thumbnail) Validate(args []interface{}) error {
+func (f *thumbnail) Validate(args []any) error {
 	if len(args) != 3 {
 		return fmt.Errorf("The thumbnail function supports 3 parameters, but got %d", len(args))
 	}
 	return nil
 }
 
-func (f *thumbnail) Exec(args []interface{}, _ api.FunctionContext) (interface{}, bool) {
+func (f *thumbnail) Exec(args []any, _ api.FunctionContext) (any, bool) {
 	arg, ok := args[0].([]byte)
 	if !ok {
 		return fmt.Errorf("arg[0] is not a bytea, got %v", args[0]), false

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright 2021-2023 EMQ Technologies Co., Ltd.
+# Copyright 2021-2024 EMQ Technologies Co., Ltd.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,23 +26,16 @@ chmod +x test/plugins/service/http_server
 go build -o test/plugins/sql/create_table test/plugins/sql/create_table.go
 chmod +x test/plugins/sql/create_table
 
+ver=`git describe --tags --always --match 'v[0-9]*.[0-9]*.[0-9]*' | sed 's/^v//g'`
+os=`uname -s | tr "[A-Z]" "[a-z]"`
+base_dir=_build/kuiper-"$ver"-"$os"-amd64
+cp extensions/sources/zmq/zmq.yaml $base_dir/etc/sources/
+cp extensions/sources/zmq/zmq.json $base_dir/etc/sources/
+cp test/yaml_for_test/sql.yaml $base_dir/etc/sources/
+cp extensions/sources/sql/sql.json $base_dir/etc/sources/
+cp extensions/sources/sql/sql.json $base_dir/etc/sinks/
+
 cd test
-
-rm -rf zmq.* Zmq.so
-
-FILE=../plugins/sources/Zmq.so
-if [ -f "$FILE" ]; then
-    echo "$FILE exists, not requried to build plugin."
-else
-    echo "$FILE does not exist, will build the plugin."
-    go build -trimpath --buildmode=plugin -o ../plugins/sources/Zmq.so ../extensions/sources/zmq/zmq.go
-fi
-
-mv ../plugins/sources/Zmq.so .
-cp ../extensions/sources/zmq/zmq.yaml .
-cp ../extensions/sources/zmq/zmq.json .
-zip zmq.zip Zmq.so zmq.yaml zmq.json
-rm -rf zmq.yaml Zmq.so
 
 rm -rf image.* Image.so
 
@@ -51,7 +44,7 @@ if [ -f "$FILE" ]; then
     echo "$FILE exists, not requried to build plugin."
 else
     echo "$FILE does not exist, will build the plugin."
-    go build -trimpath --buildmode=plugin -o ../plugins/functions/Image.so ../extensions/functions/image/*.go
+    go build -trimpath --buildmode=plugin --cover -covermode=atomic -coverpkg=../... -o ../plugins/functions/Image.so ../extensions/functions/image/*.go
 fi
 
 mv ../plugins/functions/Image.so .
@@ -59,55 +52,31 @@ cp ../extensions/functions/image/image.json .
 zip image.zip Image.so image.json
 rm -rf Image.so
 
-# build tdengine plugins
-FILE=../plugins/sinks/Tdengine.so
-if [ -f "$FILE" ]; then
-    echo "$FILE exists, not requried to build plugin."
-else
-    echo "$FILE does not exist, will build the plugin."
-    go build -trimpath --buildmode=plugin -o ../plugins/sinks/Tdengine.so ../extensions/sinks/tdengine/*.go
-fi
-
-mv ../plugins/sinks/Tdengine.so .
-mv ../extensions/sinks/tdengine/tdengine.json .
-zip tdengine.zip Tdengine.so tdengine.json
-rm -rf Tdengine.so
-
-# build sql plugins
-FILE=../plugins/sinks/Sql.so
-if [ -f "$FILE" ]; then
-    echo "$FILE exists, not required to build plugin."
-else
-    echo "$FILE does not exist, will build the plugin."
-    go build -trimpath --buildmode=plugin -o ../plugins/sinks/Sql.so ../extensions/sinks/sql/*.go
-fi
-
-mv ../plugins/sinks/Sql.so .
-cp ../extensions/sources/sql/sql.json .
-zip sql.zip Sql.so sql.json
-rm -rf Sql.so
-
-FILE=../plugins/sources/Sql.so
-if [ -f "$FILE" ]; then
-    echo "$FILE exists, not required to build plugin."
-else
-    echo "$FILE does not exist, will build the plugin."
-    go build -trimpath --buildmode=plugin -o ../plugins/sources/Sql.so ../extensions/sources/sql/*.go
-fi
-
-mv ../plugins/sources/Sql.so .
-cp ../extensions/sources/sql/sql.yaml .
-cp ../extensions/sources/sql/sql.json .
-zip sqlSrc.zip Sql.so sql.yaml sql.json
-rm -rf Sql.so
-
 rm -rf plugins/service/web/plugins/
 mkdir -p plugins/service/web/plugins/
-mv zmq.zip plugins/service/web/plugins/
 mv image.zip plugins/service/web/plugins/
-mv tdengine.zip plugins/service/web/plugins/
-mv sql.zip plugins/service/web/plugins/
-mv sqlSrc.zip plugins/service/web/plugins/
+
+# prepare portable plugins
+cd ..
+mkdir test/temp
+
+mkdir test/temp/mirror
+cd sdk/go/example/mirror
+go build -o ../../../../test/temp/mirror/mirror .
+cd ../../../..
+cp sdk/go/example/mirror/mirror.json test/temp/mirror
+cp -r sdk/go/example/mirror/sources test/temp/mirror/
+cd test/temp/mirror
+zip -r ../../plugins/service/web/plugins/mirror.zip *
+cd ../../..
+
+cp -r sdk/python/example/pysam test/temp/pysam
+cp -r sdk/python/ekuiper test/temp/pysam/
+cd test/temp/pysam
+zip -r ../../plugins/service/web/plugins/pysam.zip *
+cd ../..
+
+rm -r temp
 
 # prepare portable plugins
 cd ..

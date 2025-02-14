@@ -18,11 +18,11 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/lf-edge/ekuiper/internal/testx"
+	"github.com/lf-edge/ekuiper/v2/internal/testx"
 )
 
 func init() {
-	testx.InitEnv()
+	testx.InitEnv("keyedstate")
 }
 
 func TestGetKeyedState(t *testing.T) {
